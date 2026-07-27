@@ -1,0 +1,38 @@
+# RouteCare AI Backend - Core Dependencies
+
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# Database
+sqlalchemy==2.0.35
+alembic==1.13.3
+psycopg2-binary==2.9.9
+geoalchemy2==0.15.2
+
+# Settings & validation
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.9
+
+# Background processing
+celery==5.4.0
+redis==5.0.8
+
+# Import system (used starting Phase 3)
+pandas==2.2.3
+openpyxl==3.1.5
+
+# Optimization engine (used starting Phase 6)
+ortools==9.10.4067
+
+# HTTP client (used for geocoding/routing services)
+httpx==0.27.2
+
+# Testing
+pytest==8.3.3
+pytest-asyncio==0.24.0
