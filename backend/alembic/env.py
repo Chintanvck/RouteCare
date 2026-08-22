@@ -12,15 +12,14 @@ revision --autogenerate` will pick them up automatically.
 
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+# Import models here so they register with Base.metadata before
+# autogenerate runs.
+import app.models  # noqa: E402,F401
+from alembic import context
 from app.core.config import settings
 from app.database.base import Base
-
-# Import models here so they register with Base.metadata before
-# autogenerate runs. Empty in Phase 0 - populated starting Phase 1.
-# from app.models import clinic, user, therapist, patient, appointment  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
