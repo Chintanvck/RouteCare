@@ -14,7 +14,7 @@ from app.models.import_job import ImportJob
 from app.models.import_row import ImportRow
 from app.models.import_row_error import ImportRowError
 from app.models.password_reset_token import PasswordResetToken
-from app.models.patient import Patient
+from app.models.patient import GeocodingStatus, Patient
 from app.models.patient_availability import PatientAvailability
 from app.models.refresh_token import RefreshToken
 from app.models.therapist import Therapist
@@ -28,6 +28,7 @@ __all__ = [
     "ImportJob",
     "ImportRow",
     "ImportRowError",
+    "GeocodingStatus",
     "PasswordResetToken",
     "Patient",
     "PatientAvailability",

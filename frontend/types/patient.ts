@@ -1,6 +1,8 @@
 // Mirrors backend/app/schemas/patient.py - keep in sync by hand until
 // an OpenAPI-generated client is worth the added build step.
 
+export type GeocodingStatus = "PENDING" | "GEOCODED" | "FAILED" | "MANUAL";
+
 export interface Patient {
   id: string;
   clinic_id: string;
@@ -16,6 +18,9 @@ export interface Patient {
   zip_code: string;
   latitude: number | null;
   longitude: number | null;
+  geocoding_status: GeocodingStatus;
+  geocoded_at: string | null;
+  location_verified: boolean;
   visit_duration_minutes: number | null;
   priority_level: number | null;
   scheduling_notes: string | null;

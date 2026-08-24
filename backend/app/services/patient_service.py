@@ -8,6 +8,23 @@ so a wrong-clinic ID should be indistinguishable from a nonexistent one
 (404 either way), rather than confirming the record exists elsewhere
 via a 403 (which is how app.core.permissions.require_clinic_access
 behaves, and remains the right default for less sensitive resources).
+
+Geocoding lifecycle (Phase 5, see app.models.patient.GeocodingStatus):
+- Coordinates supplied directly (create or update) are always treated
+  as a manual override - MANUAL + location_verified=True - regardless
+  of what the address text says. A human provided them; the system
+  never second-guesses that.
+- Otherwise, the address is geocoded automatically through
+  app.services.geocoding.geocode_address, which has its own short
+  timeout and never raises - `_geocode_safely` below is an extra safety
+  net in case a provider implementation ever misbehaves, so a
+  geocoding hiccup can never block patient create/update.
+- Editing the address on an already `location_verified` patient does
+  NOT trigger a silent re-geocode - a human confirmed those coordinates
+  are correct, so an address typo fix shouldn't move the pin out from
+  under them. Un-marking `location_verified` in the same request (or a
+  prior one) opts back into automatic re-geocoding on the next address
+  edit.
 """
 
 import uuid
@@ -17,11 +34,12 @@ from typing import Literal
 from sqlalchemy.orm import InstrumentedAttribute, Query, Session
 
 from app.core.exceptions import NotFoundError
+from app.core.logging_config import app_logger
 from app.database.pagination import paginate
-from app.models.patient import Patient
+from app.models.patient import GeocodingStatus, Patient
 from app.schemas.common import PaginationParams
 from app.schemas.patient import PatientCreate, PatientUpdate
-from app.services.geocoding import get_geocoding_provider
+from app.services import geocoding
 
 SortBy = Literal["name", "created_at", "zip_code"]
 SortOrder = Literal["asc", "desc"]
@@ -31,26 +49,47 @@ def _not_found() -> NotFoundError:
     return NotFoundError("Patient was not found.", code="PATIENT_NOT_FOUND")
 
 
-def _maybe_geocode(
-    *, latitude: float | None, longitude: float | None, address_line_1: str, city: str, state: str, zip_code: str
-) -> tuple[float | None, float | None]:
-    if latitude is not None and longitude is not None:
-        return latitude, longitude
-    result = get_geocoding_provider().geocode(address_line_1=address_line_1, city=city, state=state, zip_code=zip_code)
-    if result is None:
-        return latitude, longitude
-    return result.latitude, result.longitude
+def _geocode_safely(
+    *, clinic_id: uuid.UUID, address_line_1: str, city: str, state: str, zip_code: str
+) -> geocoding.GeocodeResult | None:
+    """geocoding.geocode_address already turns every provider failure mode into `None` rather than
+    raising - this wrapper is only a last-resort safety net so a bug in a future provider
+    implementation still can't block patient create/update."""
+    try:
+        return geocoding.geocode_address(
+            clinic_id=clinic_id, address_line_1=address_line_1, city=city, state=state, zip_code=zip_code
+        )
+    except Exception:  # noqa: BLE001 - geocoding must never block this request
+        app_logger.warning("patient_geocoding_unexpected_error", extra={"clinic_id": str(clinic_id)})
+        return None
 
 
 def create_patient(db: Session, *, clinic_id: uuid.UUID, data: PatientCreate, source_system: str = "manual") -> Patient:
-    latitude, longitude = _maybe_geocode(
-        latitude=data.latitude,
-        longitude=data.longitude,
-        address_line_1=data.address_line_1,
-        city=data.city,
-        state=data.state,
-        zip_code=data.zip_code,
-    )
+    now = datetime.now(timezone.utc)
+
+    if data.latitude is not None and data.longitude is not None:
+        latitude, longitude = data.latitude, data.longitude
+        geocoding_status = GeocodingStatus.MANUAL
+        location_verified = True
+        geocoded_at = now
+    else:
+        result = _geocode_safely(
+            clinic_id=clinic_id,
+            address_line_1=data.address_line_1,
+            city=data.city,
+            state=data.state,
+            zip_code=data.zip_code,
+        )
+        location_verified = False
+        if result is not None:
+            latitude, longitude, geocoding_status, geocoded_at = (
+                result.latitude,
+                result.longitude,
+                GeocodingStatus.GEOCODED,
+                now,
+            )
+        else:
+            latitude, longitude, geocoding_status, geocoded_at = None, None, GeocodingStatus.FAILED, None
 
     patient = Patient(
         clinic_id=clinic_id,
@@ -65,6 +104,9 @@ def create_patient(db: Session, *, clinic_id: uuid.UUID, data: PatientCreate, so
         zip_code=data.zip_code,
         latitude=latitude,
         longitude=longitude,
+        geocoding_status=geocoding_status,
+        geocoded_at=geocoded_at,
+        location_verified=location_verified,
         external_patient_id=data.external_patient_id,
         visit_duration_minutes=data.visit_duration_minutes,
         priority_level=data.priority_level,
@@ -127,28 +169,84 @@ def update_patient(db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID, 
     patient = get_patient(db, clinic_id=clinic_id, patient_id=patient_id)
 
     updates = data.model_dump(exclude_unset=True)
+    explicit_verified = updates.pop("location_verified", None)
+    manual_coords_supplied = (
+        "latitude" in updates
+        and "longitude" in updates
+        and updates["latitude"] is not None
+        and updates["longitude"] is not None
+    )
+    address_changed = bool({"address_line_1", "city", "state", "zip_code"} & updates.keys())
+
     for field, value in updates.items():
         setattr(patient, field, value)
 
-    if (
-        "latitude" in updates
-        or "longitude" in updates
-        or any(f in updates for f in ("address_line_1", "city", "state", "zip_code"))
-    ):
-        latitude, longitude = _maybe_geocode(
-            latitude=patient.latitude,
-            longitude=patient.longitude,
+    if explicit_verified is not None:
+        patient.location_verified = explicit_verified
+
+    now = datetime.now(timezone.utc)
+    if manual_coords_supplied:
+        patient.geocoding_status = GeocodingStatus.MANUAL
+        patient.location_verified = True
+        patient.geocoded_at = now
+    elif address_changed and not patient.location_verified:
+        result = _geocode_safely(
+            clinic_id=clinic_id,
             address_line_1=patient.address_line_1,
             city=patient.city,
             state=patient.state,
             zip_code=patient.zip_code,
         )
-        patient.latitude = latitude
-        patient.longitude = longitude
+        if result is not None:
+            patient.latitude = result.latitude
+            patient.longitude = result.longitude
+            patient.geocoding_status = GeocodingStatus.GEOCODED
+            patient.geocoded_at = now
+        else:
+            # The address changed and the old coordinates are for the old address - keeping them
+            # would silently mispoint the patient, so they're cleared rather than left stale.
+            patient.latitude = None
+            patient.longitude = None
+            patient.geocoding_status = GeocodingStatus.FAILED
+            patient.geocoded_at = None
 
     db.commit()
     db.refresh(patient)
     return patient
+
+
+def geocode_patient(db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID) -> tuple[Patient, str | None]:
+    """Explicit re-geocode action (`POST /patients/{id}/geocode`) - retries geocoding from the
+    patient's current address regardless of its current status, e.g. for a patient imported from
+    Excel before geocoding was available, or one whose address previously failed to resolve.
+    Returns the updated patient plus the provider's normalized address (not persisted - see
+    app.models.patient's docstring on why normalized_address isn't a stored column), or None if
+    the address still couldn't be geocoded.
+    """
+    patient = get_patient(db, clinic_id=clinic_id, patient_id=patient_id)
+
+    result = _geocode_safely(
+        clinic_id=clinic_id,
+        address_line_1=patient.address_line_1,
+        city=patient.city,
+        state=patient.state,
+        zip_code=patient.zip_code,
+    )
+    if result is None:
+        patient.geocoding_status = GeocodingStatus.FAILED
+        patient.geocoded_at = None
+        db.commit()
+        db.refresh(patient)
+        return patient, None
+
+    patient.latitude = result.latitude
+    patient.longitude = result.longitude
+    patient.geocoding_status = GeocodingStatus.GEOCODED
+    patient.geocoded_at = datetime.now(timezone.utc)
+    patient.location_verified = False
+    db.commit()
+    db.refresh(patient)
+    return patient, result.normalized_address
 
 
 def soft_delete_patient(db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID) -> None:

@@ -7,16 +7,40 @@ the doc's own note. No medical/clinical fields belong here.
 
 Unlike User (whose clinic_id is nullable for SYSTEM_ADMIN), a patient
 always belongs to exactly one clinic - clinic_id is required.
+
+`GeocodingStatus` (Phase 5) is defined here and reused by
+app.models.therapist - both go through the same
+app.services.geocoding.geocode_address lifecycle:
+  PENDING  - no coordinates yet, geocoding not yet attempted/succeeded
+  GEOCODED - coordinates came from the geocoding provider
+  FAILED   - geocoding was attempted but the provider couldn't resolve
+             the address (retryable via the explicit re-geocode endpoint)
+  MANUAL   - coordinates were supplied directly by a user, not derived
+             from the address - see `location_verified` below
+`location_verified` additionally marks coordinates a human has
+confirmed correct (always true for MANUAL); app.services.patient_service
+never silently overwrites a verified location just because the address
+text changed - see its docstring.
 """
 
 import uuid
+from datetime import datetime
+from enum import Enum
 
-from sqlalchemy import ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
 from app.database.types import GUID
 from app.models.mixins import SoftDeleteMixin, TimestampMixin
+
+
+class GeocodingStatus(str, Enum):
+    PENDING = "PENDING"
+    GEOCODED = "GEOCODED"
+    FAILED = "FAILED"
+    MANUAL = "MANUAL"
 
 
 class Patient(Base, TimestampMixin, SoftDeleteMixin):
@@ -40,6 +64,11 @@ class Patient(Base, TimestampMixin, SoftDeleteMixin):
 
     latitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
     longitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
+    geocoding_status: Mapped[GeocodingStatus] = mapped_column(
+        SAEnum(GeocodingStatus, name="geocoding_status"), nullable=False, default=GeocodingStatus.PENDING
+    )
+    geocoded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    location_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     visit_duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     priority_level: Mapped[int | None] = mapped_column(Integer, nullable=True)

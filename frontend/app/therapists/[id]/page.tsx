@@ -9,10 +9,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AvailabilityEditor } from "@/components/therapists/availability-editor";
+import { LocationCard } from "@/components/maps/location-card";
 import { TherapistForm, toApiPayload, valuesFromTherapist } from "@/components/therapists/therapist-form";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import type { Appointment } from "@/types/appointment";
+import type { TherapistGeocodeResponse } from "@/types/maps";
 import type { PaginatedResponse } from "@/types/patient";
 import type { Therapist, TherapistAvailabilityRule, TherapistFormValues } from "@/types/therapist";
 
@@ -167,6 +169,19 @@ export default function TherapistDetailPage() {
                 </ul>
               </CardContent>
             </Card>
+
+            <LocationCard
+              latitude={therapist.home_latitude}
+              longitude={therapist.home_longitude}
+              geocodingStatus={therapist.geocoding_status}
+              geocodedAt={therapist.geocoded_at}
+              locationVerified={therapist.location_verified}
+              onGeocode={async () => {
+                const result = await apiFetch<TherapistGeocodeResponse>(`/therapists/${params.id}/geocode`, { method: "POST" });
+                setTherapist(result.therapist);
+                return { success: result.success, normalizedAddress: result.normalized_address };
+              }}
+            />
 
             <AvailabilityEditor therapistId={therapist.id} initialRules={availability} />
           </>

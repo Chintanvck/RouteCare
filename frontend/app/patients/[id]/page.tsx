@@ -19,10 +19,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LocationCard } from "@/components/maps/location-card";
 import { PatientForm, toApiPayload, valuesFromPatient } from "@/components/patients/patient-form";
 import { apiFetch, ApiError } from "@/lib/api";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import type { Patient, PatientFormValues } from "@/types/patient";
+import type { PatientGeocodeResponse } from "@/types/maps";
 
 export default function PatientDetailPage() {
   const { checked } = useRequireAuth();
@@ -158,6 +160,19 @@ export default function PatientDetailPage() {
                 <Field label="Notes" value={patient.scheduling_notes} />
               </CardContent>
             </Card>
+
+            <LocationCard
+              latitude={patient.latitude}
+              longitude={patient.longitude}
+              geocodingStatus={patient.geocoding_status}
+              geocodedAt={patient.geocoded_at}
+              locationVerified={patient.location_verified}
+              onGeocode={async () => {
+                const result = await apiFetch<PatientGeocodeResponse>(`/patients/${params.id}/geocode`, { method: "POST" });
+                setPatient(result.patient);
+                return { success: result.success, normalizedAddress: result.normalized_address };
+              }}
+            />
           </>
         )}
 

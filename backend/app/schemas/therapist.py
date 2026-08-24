@@ -11,6 +11,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.models.patient import GeocodingStatus
 from app.schemas.auth import validate_password_strength
 from app.schemas.patient import _validate_phone
 
@@ -56,6 +57,11 @@ class TherapistUpdate(BaseModel):
     home_address: str | None = Field(default=None, max_length=2000)
     home_latitude: float | None = Field(default=None, ge=-90, le=90)
     home_longitude: float | None = Field(default=None, ge=-180, le=180)
+    location_verified: bool | None = Field(
+        default=None,
+        description="Explicitly mark (or un-mark) this therapist's home coordinates as "
+        "human-verified, without necessarily changing them.",
+    )
     max_daily_hours: int | None = Field(default=None, gt=0, le=24)
     max_drive_time_minutes: int | None = Field(default=None, gt=0, le=600)
 
@@ -83,6 +89,9 @@ class TherapistPublic(BaseModel):
     home_address: str | None
     home_latitude: float | None
     home_longitude: float | None
+    geocoding_status: GeocodingStatus
+    geocoded_at: datetime | None
+    location_verified: bool
     max_daily_hours: int | None
     max_drive_time_minutes: int | None
     created_at: datetime

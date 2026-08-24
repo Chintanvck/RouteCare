@@ -3,13 +3,16 @@
 AI-powered scheduling and route optimization platform for home healthcare
 providers (therapists, PTAs, nurses, and the agencies that employ them).
 
-> **Status: Phase 4 — Therapist Management & Scheduling.**
+> **Status: Phase 5 — Maps & Travel-Time Engine.**
 > Auth/RBAC (Phase 1B), shared backend infrastructure (Phase 1C), patient
-> management (Phase 2), and TheraOffice Excel import (Phase 3) are in
-> place. Clinics can now manage therapists (profile + weekly
-> availability) and manually schedule, edit, and cancel appointments
-> through a calendar UI with server-enforced conflict validation.
-> Maps/routes, AI optimization, and analytics are still not built. See
+> management (Phase 2), TheraOffice Excel import (Phase 3), and therapist
+> management/scheduling (Phase 4) are in place. Patients and therapists
+> can now be geocoded (Nominatim), driving distance/time between any two
+> locations is available (OSRM, Redis-cached), and a map view shows
+> patient/therapist locations with a travel-time calculator. AI schedule
+> optimization and route ordering are still not built - this phase is
+> the location/travel-time *foundation* the optimization engine will
+> consume, not the engine itself. See
 > [`docs/10_Development_Roadmap.md`](docs/10_Development_Roadmap.md)
 > for what's built in each subsequent phase, and
 > [`docs/13_Coding_Standards.md`](docs/13_Coding_Standards.md) for how
@@ -60,22 +63,25 @@ backend/app/
 │   ├── request_context.py  # contextvars backing request_id/user_id/clinic_id
 │   ├── logging_config.py   # structured JSON logging
 │   ├── health.py           # check_database/check_redis for readiness
+│   ├── cache.py             # generic Redis-backed JSON get/set with TTL - geocoding/travel-time cache
 │   └── rate_limiting.py    # no-op extension points (no backend wired up yet)
 ├── database/                # SQLAlchemy engine, session, declarative Base, portable GUID type, pagination.paginate()
 ├── models/                  # ORM models: Clinic, User, RefreshToken, PasswordResetToken, AuditLog, Patient,
 │                            # ImportJob, ImportRow, ImportRowError, Therapist, TherapistAvailability,
-│                            # PatientAvailability, Appointment, mixins.py
+│                            # PatientAvailability, Appointment, mixins.py (GeocodingStatus lives on patient.py)
 ├── modules/
 │   ├── auth/                 # register/login/logout/refresh/change-password/reset/me router
-│   ├── patients/              # patient list/create/get/update/delete + patient availability router
+│   ├── patients/              # patient list/create/get/update/delete/geocode + patient availability router
 │   ├── imports/                # upload/mapping/preview/errors/confirm router
-│   ├── therapists/              # therapist list/create/get/update + weekly availability router
-│   └── scheduling/               # appointment list(calendar)/create/get/update/cancel + /validate router
+│   ├── therapists/              # therapist list/create/get/update/geocode + weekly availability router
+│   ├── scheduling/               # appointment list(calendar)/create/get/update/cancel + /validate router
+│   └── maps/                      # /travel-time, /travel-time-matrix (read-only, all clinic roles)
 ├── schemas/                 # Pydantic request/response schemas; common.py has PaginationParams/PaginatedResponse
 ├── services/                # business logic: auth_service.py, patient_service.py, geocoding.py,
 │                            # import_service.py, column_mapping.py, duplicate_detection.py,
 │                            # file_validation.py, excel_parser.py, therapist_service.py,
-│                            # availability_service.py, appointment_service.py, scheduling_validation.py
+│                            # availability_service.py, appointment_service.py, scheduling_validation.py,
+│                            # routing.py, travel_time_service.py
 └── workers/                 # Celery app + tasks.py (demo) + import_tasks.py (validate/execute)
 ```
 
@@ -88,19 +94,22 @@ frontend/
 │   ├── patients/               # list, new, and [id] (view/edit) pages
 │   ├── imports/patients/        # the 5-step import wizard page
 │   ├── therapists/               # list, new, and [id] (profile/edit + weekly availability) pages
-│   └── schedule/                 # day/week calendar, appointment create/edit/cancel
+│   ├── schedule/                 # day/week calendar, appointment create/edit/cancel
+│   └── map/                       # patient/therapist location map + travel-time calculator
 ├── components/
 │   ├── ui/                     # shadcn/ui primitives (button, input, table, alert-dialog, progress, ...)
 │   ├── layout/                 # AppHeader (nav + logout)
 │   ├── patients/                # PatientForm, shared by the new and edit flows
 │   ├── imports/                 # ImportStepper, Upload/Mapping/Preview/Results step components
 │   ├── therapists/               # TherapistForm, AvailabilityEditor
-│   └── scheduling/                # AppointmentForm (live conflict check via /validate), AppointmentCard
+│   ├── scheduling/                # AppointmentForm (live conflict check via /validate), AppointmentCard
+│   └── maps/                       # LocationCard (geocode status + action), MapView (Leaflet, dynamic-
+│                                   # imported client-only), TravelTimeCalculator
 ├── lib/
 │   ├── api.ts                  # fetch wrapper (JSON + multipart), standardized ApiError, 401 -> refresh -> retry
 │   ├── auth.ts                  # localStorage token storage
 │   └── use-require-auth.ts      # client-side route guard
-└── types/                      # TS types mirroring backend/app/schemas/{patient,import_job,therapist,appointment}.py
+└── types/                      # TS types mirroring backend/app/schemas/{patient,import_job,therapist,appointment,maps}.py
 ```
 
 ---
@@ -186,7 +195,10 @@ python3 scripts/check_db_connection.py
 adds `patients`; `0003_create_import_tables` adds `imports`,
 `import_rows`, and `import_errors`; `0004_create_scheduling_tables`
 adds `therapists`, `therapist_availability`, `patient_availability`,
-and `appointments`. All target PostgreSQL:
+and `appointments`; `0005_add_geocoding_fields` adds `geocoding_status`/
+`geocoded_at`/`location_verified` to `patients` and `therapists` (no new
+tables - travel-time results are cached in Redis, not persisted). All
+target PostgreSQL:
 
 ```bash
 cd backend
@@ -470,6 +482,82 @@ frontend check is a UX convenience, never the source of truth.
 
 ---
 
+## Maps & Travel-Time Engine
+
+Backend: `POST /api/v1/patients/{id}/geocode`, `POST /api/v1/therapists/{id}/geocode`
+(re-run geocoding from the current address on demand - e.g. for a
+patient imported before geocoding existed, or one whose address
+previously failed to resolve). `POST /api/v1/maps/travel-time` and
+`POST /api/v1/maps/travel-time-matrix` compute driving distance/time
+between any two (or up to `MAPS_MAX_MATRIX_POINTS`, default 25) of a
+patient, a therapist, or a raw lat/long coordinate - read-only, open to
+every clinic role. This phase is the location/travel-time *foundation*
+only - no schedule optimization, route ordering, or automatic
+appointment movement; see `app/services/travel_time_service.py`'s
+docstring for exactly how the optimization engine (Phase 6) is meant to
+consume it.
+
+- **Provider-independent by design**: `app/services/geocoding.py`
+  (`GeocodingProvider` Protocol, real `NominatimGeocodingProvider`) and
+  `app/services/routing.py` (`RoutingProvider` Protocol, real
+  `OSRMRoutingProvider`) mirror each other's shape. Neither commercial
+  provider is hardcoded anywhere else in the codebase - swapping either
+  out means changing one factory function
+  (`get_geocoding_provider`/`get_routing_provider`), same seam Phase 2
+  already established for geocoding. Public OpenStreetMap/Nominatim/OSRM
+  demo servers are the defaults (`NOMINATIM_BASE_URL`/`OSRM_BASE_URL`),
+  self-hostable later without touching any caller.
+- **Never blocks on a slow/failed external call**: both providers have
+  a configurable timeout (`GEOCODING_TIMEOUT_SECONDS`/
+  `ROUTING_TIMEOUT_SECONDS`, default 5s) and turn every failure mode -
+  invalid/incomplete address, no route found, network error, timeout,
+  malformed response - into a plain `None`, never an exception. A
+  geocoding failure leaves a patient/therapist in `FAILED` status rather
+  than blocking their creation; a travel-time failure returns
+  `{"reachable": false}` rather than a 500.
+- **Manual overrides are never silently clobbered.** `Patient`/`Therapist`
+  each track `geocoding_status` (`PENDING`/`GEOCODED`/`FAILED`/`MANUAL`),
+  `geocoded_at`, and `location_verified`. Supplying coordinates directly
+  always marks them `MANUAL` + verified; editing the address on an
+  already-verified record does *not* trigger a silent re-geocode - see
+  `app/services/patient_service.py`'s docstring for the full state
+  machine (and `app/services/therapist_service.py`'s, which mirrors it
+  for `home_address`).
+- **Redis caching, tenant-scoped.** `app/core/cache.py` is a generic
+  get/set-JSON-with-TTL wrapper around the same Redis already used for
+  Celery; any Redis error is treated as a cache miss, so a cache outage
+  degrades to "always call the provider" rather than breaking the
+  feature. Geocoding results cache ~30 days
+  (`GEOCODE_CACHE_TTL_SECONDS`), travel-time results ~24 hours
+  (`TRAVEL_TIME_CACHE_TTL_SECONDS`) - both cache keys are namespaced per
+  `clinic_id`, even though a geocoded address's coordinates aren't
+  inherently clinic-specific data, per the explicit requirement that
+  caching never create a cross-tenant data path.
+- **Batched, not one-request-per-pair.** `get_travel_time_matrix`
+  (`app/services/travel_time_service.py`) checks the cache per pair
+  first; if anything is missing, it issues exactly one OSRM `/table`
+  request for the whole matrix (OSRM computes the full N x N in one call
+  regardless of which subset is actually needed) rather than N² separate
+  `/route` calls. Matrix requests are capped at `MAPS_MAX_MATRIX_POINTS`
+  points and always computed synchronously within the request - large,
+  clinic-wide matrices for the optimization engine are Phase 6's problem
+  (a background job), not this phase's.
+
+Frontend: `/map` - patient and therapist markers on a Leaflet
+(OpenStreetMap tiles) map, click-to-select with a details panel, and a
+travel-time calculator (pick any two geocoded locations, see distance
+and driving time). Patient markers show name/address/coordinates only
+in the details panel - no phone/email/scheduling notes on the map
+itself, per the "don't expose more than needed" guidance. Patients
+without coordinates yet are listed separately with their geocoding
+status rather than silently omitted. `Patient`/`Therapist` detail pages
+also gained a `LocationCard` (geocoding status badge, coordinates, a
+"Geocode now"/"Re-geocode" action) - the same component, reused, so
+"has this record been geocoded" is answerable from either page or the
+map.
+
+---
+
 ## Environment Variables
 
 See `.env.example` (root), `backend/.env.example`, and
@@ -483,6 +571,11 @@ See `.env.example` (root), `backend/.env.example`, and
 | `IMPORT_STORAGE_DIR` | Private, server-side directory for uploaded import files (default `var/imports/`) |
 | `IMPORT_MAX_FILE_SIZE_BYTES` | Upload size cap for patient imports (default 10 MB) |
 | `CELERY_TASK_ALWAYS_EAGER` | Dev/demo only - runs Celery tasks in-process without a worker/Redis. Never `true` in production |
+| `NOMINATIM_BASE_URL` | Geocoding provider base URL (default the public Nominatim demo server) |
+| `NOMINATIM_USER_AGENT` | Required by Nominatim's usage policy - identify your deployment before going to production |
+| `OSRM_BASE_URL` | Routing provider base URL (default the public OSRM demo server) |
+| `GEOCODE_CACHE_TTL_SECONDS` / `TRAVEL_TIME_CACHE_TTL_SECONDS` | Redis cache lifetimes for geocoding/travel-time results |
+| `MAPS_MAX_MATRIX_POINTS` | Cap on points per `/maps/travel-time-matrix` request (default 25) |
 | `NEXT_PUBLIC_API_BASE_URL` | Where the frontend expects the API |
 
 ---
@@ -503,9 +596,15 @@ See `.env.example` (root), `backend/.env.example`, and
   probes a `bcrypt.__about__` attribute that no longer exists, so every
   hash/verify call raises. `app/core/security.py` calls the `bcrypt`
   library directly instead.
-- **Maps/optimization/analytics modules are still empty placeholders** —
-  auth, patients, imports, and therapist management/scheduling (Phase 4)
-  are implemented so far.
+- **Optimization/analytics modules are still empty placeholders** — auth,
+  patients, imports, therapist management/scheduling (Phase 4), and
+  maps/travel-time (Phase 5) are implemented so far.
+- **Public Nominatim/OSRM demo servers, not a production-grade
+  deployment.** Both have real usage limits (Nominatim in particular
+  caps at roughly one request/second) - fine for development and this
+  phase's scope, but a real production deployment should self-host both
+  (docs/03_System_Architecture.md already calls for this) by pointing
+  `NOMINATIM_BASE_URL`/`OSRM_BASE_URL` at private instances.
 - **`patient_duplicates` (docs/04 section 15) is not implemented.** It's
   general cross-cutting duplicate tracking outside the import flow;
   import-scoped duplicate matches live on `import_rows` instead. Revisit

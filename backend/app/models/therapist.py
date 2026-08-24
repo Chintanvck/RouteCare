@@ -13,20 +13,29 @@ the two to drift out of sync.
 
 `home_address` stays a single free-text field, matching the doc exactly
 (unlike Patient, which splits address into structured lines/city/state/
-zip) - geocoding isn't wired up for therapists in this phase either
-(same as Patient's current no-op provider), so there's no need to force
-a structure this phase doesn't use yet.
+zip) - Nominatim's free-form query endpoint handles an unstructured
+address string fine, so this doesn't block Phase 5 geocoding.
+
+`geocoding_status`/`geocoded_at`/`location_verified` reuse
+`app.models.patient.GeocodingStatus` and follow the exact same lifecycle
+as Patient's (see that module's docstring) - a therapist's home address
+is the "start location" the map UI and, later, the optimization engine
+need, geocoded through the same app.services.geocoding.geocode_address
+seam.
 """
 
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
 from app.database.types import GUID
 from app.models.mixins import TimestampMixin
+from app.models.patient import GeocodingStatus
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -44,6 +53,11 @@ class Therapist(Base, TimestampMixin):
     home_address: Mapped[str | None] = mapped_column(Text(), nullable=True)
     home_latitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
     home_longitude: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
+    geocoding_status: Mapped[GeocodingStatus] = mapped_column(
+        SAEnum(GeocodingStatus, name="geocoding_status"), nullable=False, default=GeocodingStatus.PENDING
+    )
+    geocoded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    location_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     max_daily_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_drive_time_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)

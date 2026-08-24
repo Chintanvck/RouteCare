@@ -1,5 +1,7 @@
 // Mirrors backend/app/schemas/therapist.py and availability.py - keep in sync by hand.
 
+import type { GeocodingStatus } from "./patient";
+
 export interface Therapist {
   id: string;
   clinic_id: string;
@@ -13,6 +15,9 @@ export interface Therapist {
   home_address: string | null;
   home_latitude: number | null;
   home_longitude: number | null;
+  geocoding_status: GeocodingStatus;
+  geocoded_at: string | null;
+  location_verified: boolean;
   max_daily_hours: number | null;
   max_drive_time_minutes: number | null;
   created_at: string;

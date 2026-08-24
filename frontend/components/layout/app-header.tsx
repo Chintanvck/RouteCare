@@ -30,6 +30,9 @@ export function AppHeader() {
           <Link href="/schedule" className="text-sm text-muted-foreground hover:text-foreground">
             Schedule
           </Link>
+          <Link href="/map" className="text-sm text-muted-foreground hover:text-foreground">
+            Map
+          </Link>
         </nav>
         <Button variant="ghost" size="sm" onClick={handleLogout}>
           Log out

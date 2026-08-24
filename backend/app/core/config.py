@@ -54,6 +54,22 @@ class Settings(BaseSettings):
     # instead of dispatching to a worker via Redis. Never set true in production.
     CELERY_TASK_ALWAYS_EAGER: bool = False
 
+    # Maps & travel-time (Phase 5). Public demo servers by default per
+    # docs/03_System_Architecture.md section 9 (OpenStreetMap/Nominatim/OSRM) -
+    # self-hostable later by pointing these at a private instance. Nominatim's
+    # usage policy requires a real identifying User-Agent and caps the public
+    # server at ~1 request/second; NOMINATIM_MIN_REQUEST_INTERVAL_SECONDS
+    # enforces that regardless of which server is configured.
+    NOMINATIM_BASE_URL: str = "https://nominatim.openstreetmap.org"
+    NOMINATIM_USER_AGENT: str = "RouteCareAI/1.0 (dev@routecare.ai)"
+    NOMINATIM_MIN_REQUEST_INTERVAL_SECONDS: float = Field(default=1.1, gt=0)
+    OSRM_BASE_URL: str = "https://router.project-osrm.org"
+    GEOCODING_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0)
+    ROUTING_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0)
+    GEOCODE_CACHE_TTL_SECONDS: int = Field(default=60 * 60 * 24 * 30, gt=0)  # 30 days
+    TRAVEL_TIME_CACHE_TTL_SECONDS: int = Field(default=60 * 60 * 24, gt=0)  # 24 hours
+    MAPS_MAX_MATRIX_POINTS: int = Field(default=25, gt=1)
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]

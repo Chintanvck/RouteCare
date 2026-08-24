@@ -16,8 +16,10 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_clinic_id
 from app.core.permissions import UserRole, require_role
 from app.database.session import get_db
+from app.models.patient import GeocodingStatus
 from app.schemas.availability import SetTherapistAvailabilityRequest, TherapistAvailabilityPublic
 from app.schemas.common import PaginatedResponse, PaginationParams
+from app.schemas.maps import TherapistGeocodeResponse
 from app.schemas.therapist import TherapistCreate, TherapistPublic, TherapistUpdate
 from app.services import availability_service, therapist_service
 
@@ -79,6 +81,26 @@ def update_therapist(
 ) -> TherapistPublic:
     therapist = therapist_service.update_therapist(db, clinic_id=clinic_id, therapist_id=therapist_id, data=payload)
     return TherapistPublic.model_validate(therapist)
+
+
+@router.post(
+    "/{therapist_id}/geocode",
+    response_model=TherapistGeocodeResponse,
+    dependencies=[Depends(require_role(*_WRITE_ROLES))],
+)
+def geocode_therapist(
+    therapist_id: uuid.UUID,
+    clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    db: Session = Depends(get_db),
+) -> TherapistGeocodeResponse:
+    therapist, normalized_address = therapist_service.geocode_therapist(
+        db, clinic_id=clinic_id, therapist_id=therapist_id
+    )
+    return TherapistGeocodeResponse(
+        success=therapist.geocoding_status == GeocodingStatus.GEOCODED,
+        normalized_address=normalized_address,
+        therapist=TherapistPublic.model_validate(therapist),
+    )
 
 
 @router.get(

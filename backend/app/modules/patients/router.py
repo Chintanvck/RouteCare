@@ -19,8 +19,10 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_clinic_id
 from app.core.permissions import UserRole, require_role
 from app.database.session import get_db
+from app.models.patient import GeocodingStatus
 from app.schemas.availability import PatientAvailabilityPublic, SetPatientAvailabilityRequest
 from app.schemas.common import PaginatedResponse, PaginationParams
+from app.schemas.maps import PatientGeocodeResponse
 from app.schemas.patient import PatientCreate, PatientPublic, PatientUpdate
 from app.services import availability_service, patient_service
 
@@ -96,6 +98,24 @@ def delete_patient(
     db: Session = Depends(get_db),
 ) -> None:
     patient_service.soft_delete_patient(db, clinic_id=clinic_id, patient_id=patient_id)
+
+
+@router.post(
+    "/{patient_id}/geocode",
+    response_model=PatientGeocodeResponse,
+    dependencies=[Depends(require_role(*_WRITE_ROLES))],
+)
+def geocode_patient(
+    patient_id: uuid.UUID,
+    clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    db: Session = Depends(get_db),
+) -> PatientGeocodeResponse:
+    patient, normalized_address = patient_service.geocode_patient(db, clinic_id=clinic_id, patient_id=patient_id)
+    return PatientGeocodeResponse(
+        success=patient.geocoding_status == GeocodingStatus.GEOCODED,
+        normalized_address=normalized_address,
+        patient=PatientPublic.model_validate(patient),
+    )
 
 
 @router.get(

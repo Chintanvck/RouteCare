@@ -13,6 +13,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.models.patient import GeocodingStatus
+
 _ZIP_RE = re.compile(r"^\d{5}(-\d{4})?$")
 _PHONE_RE = re.compile(r"^\+?[0-9()\-.\s]{7,20}$")
 _STATE_RE = re.compile(r"^[A-Za-z]{2}$")
@@ -81,6 +83,11 @@ class PatientUpdate(BaseModel):
 
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    location_verified: bool | None = Field(
+        default=None,
+        description="Explicitly mark (or un-mark) this patient's coordinates as human-verified, "
+        "without necessarily changing them - e.g. after visually confirming a map pin is correct.",
+    )
 
     external_patient_id: str | None = Field(default=None, max_length=100)
     visit_duration_minutes: int | None = Field(default=None, gt=0, le=480)
@@ -118,6 +125,9 @@ class PatientPublic(BaseModel):
     zip_code: str
     latitude: float | None
     longitude: float | None
+    geocoding_status: GeocodingStatus
+    geocoded_at: datetime | None
+    location_verified: bool
     visit_duration_minutes: int | None
     priority_level: int | None
     scheduling_notes: str | None

@@ -19,6 +19,7 @@ from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from app.modules.auth.router import router as auth_router
 from app.modules.imports.router import router as imports_router
+from app.modules.maps.router import router as maps_router
 from app.modules.patients.router import router as patients_router
 from app.modules.scheduling.router import router as scheduling_router
 from app.modules.therapists.router import router as therapists_router
@@ -62,6 +63,13 @@ tags_metadata = [
         "serves both day and week calendar views. `POST /appointments/validate` is a dry run of the same "
         "validation create/update use, for pre-submit feedback and drag-and-drop-style moves.",
     },
+    {
+        "name": "maps",
+        "description": "Driving distance/time between two locations (patients, therapists, or raw "
+        "coordinates) and small travel-time matrices, backed by OSRM with Redis caching. Read-only for "
+        "every clinic role. Geocoding a specific patient/therapist stays on their own routers "
+        "(`POST /patients/{id}/geocode`, `POST /therapists/{id}/geocode`).",
+    },
 ]
 
 app = FastAPI(
@@ -102,6 +110,7 @@ app.include_router(patients_router, prefix=f"{settings.API_V1_PREFIX}/patients",
 app.include_router(imports_router, prefix=f"{settings.API_V1_PREFIX}/imports", tags=["imports"])
 app.include_router(therapists_router, prefix=f"{settings.API_V1_PREFIX}/therapists", tags=["therapists"])
 app.include_router(scheduling_router, prefix=f"{settings.API_V1_PREFIX}/appointments", tags=["scheduling"])
+app.include_router(maps_router, prefix=f"{settings.API_V1_PREFIX}/maps", tags=["maps"])
 
 
 @app.get("/health", tags=["health"])
@@ -141,5 +150,5 @@ def readiness() -> JSONResponse:
     )
 
 
-# Remaining feature routers (optimization, maps, analytics, ...) are
+# Remaining feature routers (optimization, analytics, ...) are
 # included here as each module is implemented in later phases.

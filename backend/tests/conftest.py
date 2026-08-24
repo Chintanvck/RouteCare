@@ -57,6 +57,63 @@ def _import_storage_tmp_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(settings, "IMPORT_STORAGE_DIR", str(tmp_path / "imports"))
 
 
+class _FakeGeocodingProvider:
+    """Deterministic stand-in for the real Nominatim provider - always "fails" (returns None),
+    matching pre-Phase-5 behavior (NullGeocodingProvider) so every existing test that creates a
+    patient/therapist without explicit coordinates keeps working unchanged. Tests that need to
+    exercise a successful/specific geocode result monkeypatch
+    `app.services.geocoding.get_geocoding_provider` again with their own fake."""
+
+    def geocode(self, *, address_line_1: str, city: str, state: str, zip_code: str):
+        return None
+
+
+class _FakeRoutingProvider:
+    """Deterministic stand-in for the real OSRM provider - always reports "no route" so no test
+    accidentally depends on network access. Tests exercising routing/travel-time success paths
+    monkeypatch `app.services.routing.get_routing_provider` with their own fake."""
+
+    def route(self, *, origin_lat: float, origin_lng: float, dest_lat: float, dest_lng: float):
+        return None
+
+    def route_matrix(self, *, points: list[tuple[float, float]]):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _no_external_geocoding_or_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test suite must never depend on real Nominatim/OSRM network access. Every test gets
+    these fakes by default; override per-test with monkeypatch.setattr on the same two targets to
+    exercise specific success/failure/timeout scenarios."""
+    from app.services import geocoding, routing
+
+    monkeypatch.setattr(geocoding, "get_geocoding_provider", lambda: _FakeGeocodingProvider())
+    monkeypatch.setattr(routing, "get_routing_provider", lambda: _FakeRoutingProvider())
+
+
+@pytest.fixture(autouse=True)
+def _fake_redis_cache(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """In-memory stand-in for Redis so cache tests are deterministic and no test requires a real
+    Redis instance - app.core.cache already treats any Redis error as a miss, but that would make
+    every cache test silently a no-op rather than actually exercising caching."""
+    from app.core import cache as cache_module
+
+    store: dict[str, str] = {}
+
+    def fake_get(key: str) -> str | None:
+        return store.get(key)
+
+    def fake_setex(key: str, ttl_seconds: int, value: str) -> None:
+        store[key] = value
+
+    class _FakeRedisClient:
+        get = staticmethod(fake_get)
+        setex = staticmethod(fake_setex)
+
+    monkeypatch.setattr(cache_module, "get_redis_client", lambda: _FakeRedisClient())
+    return store
+
+
 @pytest.fixture()
 def client(db_session: Session) -> Generator[TestClient, None, None]:
     def _override_get_db() -> Generator[Session, None, None]:

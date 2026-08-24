@@ -87,7 +87,33 @@ RouteCare AI uses **PostgreSQL 16 with PostGIS**, managed through
 - No clinical notes field was added to `appointments` - not in
   `docs/04_Database_Design.md`, and out of scope per this phase's task.
 
-## What comes next (Phase 5+)
+## As of Phase 5 (Maps & Travel-Time Engine)
+
+- Migration `0005_add_geocoding_fields` adds `geocoding_status`
+  (`PENDING`/`GEOCODED`/`FAILED`/`MANUAL`), `geocoded_at`, and
+  `location_verified` to both `patients` and `therapists` - see
+  `backend/app/models/patient.py`'s `GeocodingStatus` docstring for the
+  full lifecycle. Existing rows that already had coordinates (from
+  before this migration) are backfilled as `GEOCODED` +
+  `location_verified=true`, treating pre-existing coordinates as
+  trustworthy rather than re-geocoding out from under them.
+- **Deliberately no new table for travel-time/route results.**
+  `docs/04_Database_Design.md`'s `appointment_routes` (section 10) is
+  appointment-scoped and belongs with route-order optimization (a later
+  phase); this phase's travel times are generic point-to-point (patient
+  <-> patient, patient <-> therapist, or raw coordinates), not tied to a
+  specific appointment. They're cached in Redis with a TTL instead
+  (`backend/app/services/travel_time_service.py`) - avoids unnecessary
+  spatial complexity for data that's cheap to recompute and doesn't need
+  audit history.
+- **PostGIS remains unused** (as it has since Phase 1A) - `latitude`/
+  `longitude` are still plain `NUMERIC(9,6)` columns, not a `geography`/
+  `geometry` type. Nothing in this phase needs spatial queries (no
+  "find patients within N miles" yet); PostGIS stays enabled at the
+  database level (`docker/postgres/init.sql`) for whenever that's
+  actually needed.
+
+## What comes next (Phase 6+)
 
 Per `docs/04_Database_Design.md` and `docs/11_Claude_Development_Prompts.md`,
 the following tables are introduced in later phases:
