@@ -52,9 +52,7 @@ def test_decode_access_token_rejects_bad_signature() -> None:
 
 
 def test_decode_access_token_rejects_non_access_type() -> None:
-    token = jwt.encode(
-        {"user_id": "abc", "type": "refresh"}, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM
-    )
+    token = jwt.encode({"user_id": "abc", "type": "refresh"}, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
     assert decode_access_token(token) is None
 
 

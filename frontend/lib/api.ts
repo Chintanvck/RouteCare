@@ -71,11 +71,15 @@ interface ApiFetchOptions extends RequestInit {
 export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): Promise<T> {
   const { retryOn401 = true, headers, ...rest } = options;
 
+  // FormData (file uploads) must NOT get an explicit Content-Type - the
+  // browser sets its own multipart boundary, and overriding it breaks parsing.
+  const isFormData = typeof FormData !== "undefined" && rest.body instanceof FormData;
+
   const accessToken = getAccessToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...rest,
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       ...headers,
     },

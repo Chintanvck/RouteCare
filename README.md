@@ -3,12 +3,13 @@
 AI-powered scheduling and route optimization platform for home healthcare
 providers (therapists, PTAs, nurses, and the agencies that employ them).
 
-> **Status: Phase 2 — Patient Management.**
-> Auth/RBAC (Phase 1B) and shared backend infrastructure (Phase 1C) are
-> in place; patient CRUD (list/search/filter/sort/paginate, create,
-> view, edit, soft-delete) is now implemented end to end, backend and
-> frontend. Excel import, scheduling, maps/routes, optimization, and
-> analytics are still not built. See
+> **Status: Phase 4 — Therapist Management & Scheduling.**
+> Auth/RBAC (Phase 1B), shared backend infrastructure (Phase 1C), patient
+> management (Phase 2), and TheraOffice Excel import (Phase 3) are in
+> place. Clinics can now manage therapists (profile + weekly
+> availability) and manually schedule, edit, and cancel appointments
+> through a calendar UI with server-enforced conflict validation.
+> Maps/routes, AI optimization, and analytics are still not built. See
 > [`docs/10_Development_Roadmap.md`](docs/10_Development_Roadmap.md)
 > for what's built in each subsequent phase, and
 > [`docs/13_Coding_Standards.md`](docs/13_Coding_Standards.md) for how
@@ -61,13 +62,21 @@ backend/app/
 │   ├── health.py           # check_database/check_redis for readiness
 │   └── rate_limiting.py    # no-op extension points (no backend wired up yet)
 ├── database/                # SQLAlchemy engine, session, declarative Base, portable GUID type, pagination.paginate()
-├── models/                  # ORM models: Clinic, User, RefreshToken, PasswordResetToken, AuditLog, Patient, mixins.py
+├── models/                  # ORM models: Clinic, User, RefreshToken, PasswordResetToken, AuditLog, Patient,
+│                            # ImportJob, ImportRow, ImportRowError, Therapist, TherapistAvailability,
+│                            # PatientAvailability, Appointment, mixins.py
 ├── modules/
 │   ├── auth/                 # register/login/logout/refresh/change-password/reset/me router
-│   └── patients/              # patient list/create/get/update/delete router
+│   ├── patients/              # patient list/create/get/update/delete + patient availability router
+│   ├── imports/                # upload/mapping/preview/errors/confirm router
+│   ├── therapists/              # therapist list/create/get/update + weekly availability router
+│   └── scheduling/               # appointment list(calendar)/create/get/update/cancel + /validate router
 ├── schemas/                 # Pydantic request/response schemas; common.py has PaginationParams/PaginatedResponse
-├── services/                # business logic (auth_service.py, patient_service.py, geocoding.py)
-└── workers/                 # Celery app + task skeleton (no business tasks yet)
+├── services/                # business logic: auth_service.py, patient_service.py, geocoding.py,
+│                            # import_service.py, column_mapping.py, duplicate_detection.py,
+│                            # file_validation.py, excel_parser.py, therapist_service.py,
+│                            # availability_service.py, appointment_service.py, scheduling_validation.py
+└── workers/                 # Celery app + tasks.py (demo) + import_tasks.py (validate/execute)
 ```
 
 Frontend layout:
@@ -76,16 +85,22 @@ Frontend layout:
 frontend/
 ├── app/
 │   ├── login/                 # sign-in page
-│   └── patients/               # list, new, and [id] (view/edit) pages
+│   ├── patients/               # list, new, and [id] (view/edit) pages
+│   ├── imports/patients/        # the 5-step import wizard page
+│   ├── therapists/               # list, new, and [id] (profile/edit + weekly availability) pages
+│   └── schedule/                 # day/week calendar, appointment create/edit/cancel
 ├── components/
-│   ├── ui/                     # shadcn/ui primitives (button, input, table, alert-dialog, ...)
+│   ├── ui/                     # shadcn/ui primitives (button, input, table, alert-dialog, progress, ...)
 │   ├── layout/                 # AppHeader (nav + logout)
-│   └── patients/                # PatientForm, shared by the new and edit flows
+│   ├── patients/                # PatientForm, shared by the new and edit flows
+│   ├── imports/                 # ImportStepper, Upload/Mapping/Preview/Results step components
+│   ├── therapists/               # TherapistForm, AvailabilityEditor
+│   └── scheduling/                # AppointmentForm (live conflict check via /validate), AppointmentCard
 ├── lib/
-│   ├── api.ts                  # fetch wrapper, standardized ApiError, 401 -> refresh -> retry
+│   ├── api.ts                  # fetch wrapper (JSON + multipart), standardized ApiError, 401 -> refresh -> retry
 │   ├── auth.ts                  # localStorage token storage
 │   └── use-require-auth.ts      # client-side route guard
-└── types/patient.ts            # TS types mirroring backend/app/schemas/patient.py
+└── types/                      # TS types mirroring backend/app/schemas/{patient,import_job,therapist,appointment}.py
 ```
 
 ---
@@ -168,7 +183,10 @@ python3 scripts/check_db_connection.py
 
 `0001_create_auth_tables` creates `clinics`, `users`, `refresh_tokens`,
 `password_reset_tokens`, and `audit_logs`; `0002_create_patients_table`
-adds `patients`. Both target PostgreSQL:
+adds `patients`; `0003_create_import_tables` adds `imports`,
+`import_rows`, and `import_errors`; `0004_create_scheduling_tables`
+adds `therapists`, `therapist_availability`, `patient_availability`,
+and `appointments`. All target PostgreSQL:
 
 ```bash
 cd backend
@@ -321,6 +339,137 @@ grow (e.g. a proper `AuthProvider`) as more authenticated pages arrive.
 
 ---
 
+## Patient Import (TheraOffice Excel)
+
+Backend: `POST /api/v1/imports/patients` (upload), `GET /api/v1/imports`
+(history), `GET /api/v1/imports/{id}` (status/progress),
+`POST /api/v1/imports/{id}/mapping` (confirm column mapping, kicks off
+background validation), `GET /api/v1/imports/{id}/preview` (paginated
+row-by-row results), `GET /api/v1/imports/{id}/errors`,
+`POST /api/v1/imports/{id}/confirm` (kicks off the background import).
+Restricted to `CLINIC_ADMIN`/`OFFICE_SCHEDULER` - therapists can't bulk
+import. Nothing is written to the `patients` table before `/confirm`.
+
+- **File safety**: type is determined by sniffing the first bytes
+  (ZIP/OLE2 signatures), never by filename or `Content-Type`; size-capped
+  (10 MB default, `IMPORT_MAX_FILE_SIZE_BYTES`); a rejected file never
+  touches disk. Accepted files are written atomically (temp file +
+  `os.replace`) into a private, per-clinic directory
+  (`IMPORT_STORAGE_DIR`, default `var/imports/`) that's never served by
+  any endpoint. `app/services/file_validation.scan_for_malware` is a
+  documented no-op extension point for a real scanner later.
+- **Column mapping**: `app/services/column_mapping.py` suggests a
+  mapping from the uploaded headers to Patient fields (exact alias match,
+  then fuzzy fallback) - the user reviews/edits it before anything is
+  parsed for real. Every row is then validated by literally constructing
+  a `PatientCreate` from it (Phase 2's existing validation, not
+  reimplemented).
+- **Duplicates - detected and reported, never merged.** Matching never
+  relies on name similarity alone: an exact match needs an exact signal
+  (email/phone/name+ZIP); a "probable" match needs name similarity *and*
+  a corroborating signal (same ZIP). Duplicates are skipped by default;
+  the user can explicitly choose to import them as new records anyway.
+  The import pipeline **only ever creates new `Patient` rows** - it never
+  updates or deletes an existing one.
+- **Background processing**: column-mapping confirmation and the actual
+  import both dispatch a Celery task (`app/workers/import_tasks.py`) so
+  large files don't block the request; `GET /imports/{id}` reports live
+  progress (`processed_records`/`total_records`). Set
+  `CELERY_TASK_ALWAYS_EAGER=true` for local dev/demos without a running
+  worker+Redis (never in production - enforced by the same startup
+  validator that guards `JWT_SECRET_KEY`).
+- **Status lifecycle**: `PENDING` → `PROCESSING` → `PENDING` again once
+  validated (ready for review) → `PROCESSING` again once confirmed →
+  `COMPLETED`/`COMPLETED_WITH_ERRORS`/`FAILED`. `PENDING` is reused for
+  both waiting points rather than inventing extra states; callers tell
+  them apart by whether `valid_records` is populated yet.
+
+Frontend: `/imports/patients` - a 5-step wizard (Upload → Column Mapping
+→ Validation & Duplicate Review → Preview & Confirm → Results) with a
+polling progress bar during both background phases, linked from the
+"Import from Excel" button on `/patients`.
+
+---
+
+## Therapist Management & Scheduling
+
+Backend: `GET/POST /api/v1/therapists`, `GET/PATCH /api/v1/therapists/{id}`,
+`GET/PUT /api/v1/therapists/{id}/availability` (`app/modules/therapists/router.py`,
+`app/services/therapist_service.py`, `app/services/availability_service.py`,
+`app/models/therapist.py`, `app/models/therapist_availability.py`).
+Appointments: `GET/POST /api/v1/appointments` (the list endpoint doubles
+as the calendar - filter by `start_date`/`end_date`/`therapist_id`/
+`patient_id`/`status`), `GET/PATCH/DELETE /api/v1/appointments/{id}`
+(`DELETE` cancels, it never hard-deletes), `POST /api/v1/appointments/validate`
+(dry-run check, same validation the create/update endpoints enforce -
+used by the frontend for live conflict feedback before submit).
+`GET/PUT /api/v1/patients/{id}/availability` was added alongside the
+existing patient router. No AI optimization, route optimization, maps,
+or What-If sandbox - out of scope for this phase by design.
+
+- **No duplicate user accounts**: `Therapist` is 1:1 with `User` via a
+  unique `user_id`. `POST /therapists` creates both rows atomically;
+  `PATCH /therapists/{id}` splits the update between `User` fields
+  (name/email/`is_active`) and `Therapist` profile fields and never
+  constructs a new `User`. Deactivation reuses `User.is_active` rather
+  than a separate flag.
+- **Availability is recurring-weekly only** (`day_of_week` 0=Monday..
+  6=Sunday, matching Python's `date.weekday()` - no date-specific
+  overrides, per the task's "don't build a complex recurring-calendar
+  standard" scope limit). A day with no rows is a day off; a break
+  within a working day is an `is_available=False` row layered inside an
+  otherwise-working window. `PUT` replaces a therapist's/patient's
+  entire weekly set - simpler and less error-prone than a partial
+  patch for a small, infrequently-edited list. Unconfigured patient
+  availability means "available anytime," matching how flexible
+  homecare patient scheduling actually is; rows only ever add
+  constraints, never relax them.
+- **Validation is centralized, not duplicated.** `create_appointment`,
+  `update_appointment`, and the `/validate` dry-run endpoint all share
+  the same `_validate`/`_validate_patient_availability` functions in
+  `app/services/appointment_service.py`, which check (in order):
+  therapist/patient exist and belong to the caller's clinic, the
+  therapist is active, no overlap with an existing non-cancelled
+  appointment (half-open `[start, end)` ranges), the requested time
+  falls inside a working-hours rule and outside any break, and it's
+  inside a configured patient-availability window if one exists.
+  Failures raise `BusinessRuleError` with a clear message, e.g.
+  *"Therapist already has an appointment from 1:00 PM to 2:00 PM."* -
+  never a silent reschedule of the conflicting appointment.
+- **Naive DATE/TIME columns, deliberately.** `Appointment.scheduled_date`/
+  `start_time`/`end_time` are interpreted as clinic-local wall-clock
+  time rather than `TIMESTAMPTZ`. Every scheduling query is already
+  scoped to one clinic, so there's never a cross-timezone comparison in
+  this system's usage pattern - see the docstring in
+  `app/models/appointment.py` for the full reasoning if that changes
+  later (e.g. a multi-timezone clinic network).
+- **Row-level RBAC for `THERAPIST`**: a single `restrict_to_therapist_id`
+  parameter, resolved once per request from the caller's own linked
+  `Therapist` profile, threads through list/get/update/cancel so a
+  therapist only ever sees or modifies their own appointments (a
+  `therapist_id` query param is silently overridden, not rejected) and
+  can't reassign an appointment to a different patient/therapist
+  (`APPOINTMENT_FIELD_NOT_ALLOWED`). `CLINIC_ADMIN`/`OFFICE_SCHEDULER`
+  manage all therapists/appointments in their clinic; `SYSTEM_ADMIN` has
+  no clinic and can't reach any of it.
+
+Frontend: `/therapists` (search/status filter/pagination), `/therapists/new`,
+`/therapists/[id]` (profile view/edit, an Activate/Deactivate action, a
+weekly `AvailabilityEditor`, and an upcoming-appointments summary).
+`/schedule` is the main calendar - Day/Week toggle, a therapist filter
+(Week view pins to one therapist, since a 7-day-by-all-therapists grid
+isn't a scope requirement this phase), a "+ New Appointment" action, and
+click-to-edit appointment cards grouped by therapist in Day/All view.
+No drag-and-drop, per the task's explicit "keep it out if it needs a
+large new dependency" guidance - click/edit covers the same manual-
+scheduling workflow reliably. `AppointmentForm` debounces a call to
+`POST /appointments/validate` as the user fills in the form and shows
+the resulting conflicts inline *before* they submit, but the actual
+create/update/cancel calls always re-validate server-side - the
+frontend check is a UX convenience, never the source of truth.
+
+---
+
 ## Environment Variables
 
 See `.env.example` (root), `backend/.env.example`, and
@@ -331,6 +480,9 @@ See `.env.example` (root), `backend/.env.example`, and
 | `DATABASE_URL` | Postgres connection string (backend) |
 | `REDIS_URL` | Redis connection string (backend/Celery) |
 | `JWT_SECRET_KEY` | Signing key for auth tokens *(set a real secret before any real use)* |
+| `IMPORT_STORAGE_DIR` | Private, server-side directory for uploaded import files (default `var/imports/`) |
+| `IMPORT_MAX_FILE_SIZE_BYTES` | Upload size cap for patient imports (default 10 MB) |
+| `CELERY_TASK_ALWAYS_EAGER` | Dev/demo only - runs Celery tasks in-process without a worker/Redis. Never `true` in production |
 | `NEXT_PUBLIC_API_BASE_URL` | Where the frontend expects the API |
 
 ---
@@ -351,8 +503,17 @@ See `.env.example` (root), `backend/.env.example`, and
   probes a `bcrypt.__about__` attribute that no longer exists, so every
   hash/verify call raises. `app/core/security.py` calls the `bcrypt`
   library directly instead.
-- **Patient/scheduling/import modules are still empty placeholders** —
-  only `app/modules/auth/` is implemented so far.
+- **Maps/optimization/analytics modules are still empty placeholders** —
+  auth, patients, imports, and therapist management/scheduling (Phase 4)
+  are implemented so far.
+- **`patient_duplicates` (docs/04 section 15) is not implemented.** It's
+  general cross-cutting duplicate tracking outside the import flow;
+  import-scoped duplicate matches live on `import_rows` instead. Revisit
+  if duplicate detection is ever needed outside of imports.
+- **`.xls` support depends on `xlrd`, `.xlsx` on `openpyxl`** - both are
+  already in `requirements.txt`. File type is picked by sniffing the
+  actual bytes (never the extension), so an `.xls`-named file that's
+  actually a `.xlsx` (or vice versa) is still parsed correctly.
 - **Plain ASGI middleware, not `BaseHTTPMiddleware`.** `RequestContextMiddleware`/
   `SecurityHeadersMiddleware` are plain ASGI classes rather than
   Starlette's `BaseHTTPMiddleware` — the latter can run the wrapped app
@@ -362,11 +523,11 @@ See `.env.example` (root), `backend/.env.example`, and
   `app/core/middleware.py`'s docstring. This also means mypy's Starlette
   stubs flag them with a (harmless, `# type: ignore`d) structural typing
   mismatch in `app/main.py`.
-- **Lint/format config (`backend/pyproject.toml`) was added in Phase
-  1C.** Pre-existing Phase 1A/1B files that would reformat under `black`
-  but weren't touched this phase were deliberately left as-is to avoid
-  unrelated churn — run `black backend/app backend/tests` once to
-  normalize the whole tree when convenient.
+- **Lint/format config** (`backend/pyproject.toml`, added Phase 1C).
+  The whole backend tree is `black`-formatted as of Phase 4 (a handful
+  of Phase 1A/1B files were left unformatted through Phase 3 to avoid
+  unrelated churn; Phase 4's `black app tests alembic` run normalized
+  everything).
 
 ---
 

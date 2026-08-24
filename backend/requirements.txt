@@ -27,6 +27,7 @@ redis==5.0.8
 # Import system (used starting Phase 3)
 pandas==2.2.3
 openpyxl==3.1.5
+xlrd==2.0.1
 
 # Optimization engine (used starting Phase 6)
 ortools==9.10.4067

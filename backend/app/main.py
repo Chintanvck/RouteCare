@@ -18,7 +18,10 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging_config import configure_logging
 from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from app.modules.auth.router import router as auth_router
+from app.modules.imports.router import router as imports_router
 from app.modules.patients.router import router as patients_router
+from app.modules.scheduling.router import router as scheduling_router
+from app.modules.therapists.router import router as therapists_router
 
 configure_logging()
 
@@ -38,6 +41,26 @@ tags_metadata = [
         "description": "Clinic patient records (scheduling-related information only - not a clinical "
         "record system). Scoped to the authenticated user's clinic; read access for all clinic roles, "
         "create/update/delete restricted to clinic admins and office schedulers.",
+    },
+    {
+        "name": "imports",
+        "description": "Bulk patient import from TheraOffice (or similar) Excel exports: upload, column "
+        "mapping, validation/duplicate preview, and confirmed import. Restricted to clinic admins and "
+        "office schedulers. Large files are validated and imported in the background - poll "
+        "`GET /imports/{id}` for progress.",
+    },
+    {
+        "name": "therapists",
+        "description": "Therapist profiles (a User with role=THERAPIST, plus a profile row) and their "
+        "recurring weekly availability. Read access for all clinic roles; create/update restricted to "
+        "clinic admins and office schedulers.",
+    },
+    {
+        "name": "scheduling",
+        "description": "Appointments and calendar views. Clinic admins/schedulers manage any appointment; "
+        "therapists see and lightly manage only their own. `GET /appointments?start_date=&end_date=` "
+        "serves both day and week calendar views. `POST /appointments/validate` is a dry run of the same "
+        "validation create/update use, for pre-submit feedback and drag-and-drop-style moves.",
     },
 ]
 
@@ -76,6 +99,9 @@ register_exception_handlers(app)
 
 app.include_router(auth_router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["auth"])
 app.include_router(patients_router, prefix=f"{settings.API_V1_PREFIX}/patients", tags=["patients"])
+app.include_router(imports_router, prefix=f"{settings.API_V1_PREFIX}/imports", tags=["imports"])
+app.include_router(therapists_router, prefix=f"{settings.API_V1_PREFIX}/therapists", tags=["therapists"])
+app.include_router(scheduling_router, prefix=f"{settings.API_V1_PREFIX}/appointments", tags=["scheduling"])
 
 
 @app.get("/health", tags=["health"])
@@ -115,5 +141,5 @@ def readiness() -> JSONResponse:
     )
 
 
-# Remaining feature routers (scheduling, imports, optimization, ...) are
+# Remaining feature routers (optimization, maps, analytics, ...) are
 # included here as each module is implemented in later phases.

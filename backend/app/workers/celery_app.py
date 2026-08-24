@@ -1,8 +1,7 @@
 """
 RouteCare AI - Celery application.
 
-Infrastructure only - no business tasks yet (Excel import background
-processing lands in Phase 3). Run a worker with:
+Run a worker with:
 
     celery -A app.workers.celery_app worker --loglevel=info
 
@@ -11,6 +10,14 @@ processing lands in Phase 3). Run a worker with:
 Celery can use pickle for serialization, which executes arbitrary code
 on deserialization if the broker/result backend is ever compromised or
 misconfigured. JSON has no such risk.
+
+Task modules are imported explicitly at the bottom of this file rather
+than via `autodiscover_tasks` - autodiscover only looks for a module
+literally named "tasks" per package, which stopped covering everything
+once `import_tasks.py` was added alongside `tasks.py`. Both modules
+import `celery_app` back from here; that's safe specifically because
+the import happens after `celery_app` is already bound above, so the
+partially-initialized module in sys.modules already has the name they need.
 """
 
 from celery import Celery
@@ -25,6 +32,7 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    task_always_eager=settings.CELERY_TASK_ALWAYS_EAGER,
 )
 
-celery_app.autodiscover_tasks(["app.workers"])
+from app.workers import import_tasks, tasks  # noqa: E402,F401

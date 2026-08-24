@@ -1,7 +1,12 @@
 """
-Tests for the Celery infrastructure skeleton (app.workers). `ping` is a
+Tests for the Celery infrastructure (app.workers). `ping` is a
 throwaway task that exists only to prove the worker/task wiring is
-correct end to end - no business tasks exist yet.
+correct end to end. `imports.validate`/`imports.execute` (Phase 3) are
+the first real business tasks - their actual logic is tested directly
+against the SQLite test DB in test_imports_validation.py/test_imports_confirm.py,
+not through Celery dispatch, since the task wrappers open their own
+SessionLocal() bound to the real configured DATABASE_URL rather than
+the test database. Here we only confirm they're registered.
 """
 
 from app.workers.celery_app import celery_app
@@ -23,6 +28,11 @@ def test_celery_app_broker_and_backend_come_from_settings() -> None:
 
 def test_ping_task_is_registered() -> None:
     assert "workers.ping" in celery_app.tasks
+
+
+def test_import_tasks_are_registered() -> None:
+    assert "imports.validate" in celery_app.tasks
+    assert "imports.execute" in celery_app.tasks
 
 
 def test_ping_task_direct_call_returns_pong() -> None:

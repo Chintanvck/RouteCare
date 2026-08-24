@@ -71,9 +71,14 @@ export default function PatientsListPage() {
             <h1 className="text-2xl font-semibold tracking-tight">Patients</h1>
             <p className="text-sm text-muted-foreground">Manage your clinic&apos;s patient records.</p>
           </div>
-          <Button asChild>
-            <Link href="/patients/new">Add patient</Link>
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" asChild>
+              <Link href="/imports/patients">Import from Excel</Link>
+            </Button>
+            <Button asChild>
+              <Link href="/patients/new">Add patient</Link>
+            </Button>
+          </div>
         </div>
 
         <form onSubmit={handleSearchSubmit} className="flex flex-col gap-3 sm:flex-row sm:items-end">

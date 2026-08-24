@@ -42,7 +42,7 @@ def _maybe_geocode(
     return result.latitude, result.longitude
 
 
-def create_patient(db: Session, *, clinic_id: uuid.UUID, data: PatientCreate) -> Patient:
+def create_patient(db: Session, *, clinic_id: uuid.UUID, data: PatientCreate, source_system: str = "manual") -> Patient:
     latitude, longitude = _maybe_geocode(
         latitude=data.latitude,
         longitude=data.longitude,
@@ -69,7 +69,7 @@ def create_patient(db: Session, *, clinic_id: uuid.UUID, data: PatientCreate) ->
         visit_duration_minutes=data.visit_duration_minutes,
         priority_level=data.priority_level,
         scheduling_notes=data.scheduling_notes,
-        source_system="manual",
+        source_system=source_system,
     )
     db.add(patient)
     db.commit()

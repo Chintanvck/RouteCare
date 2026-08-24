@@ -19,9 +19,10 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_clinic_id
 from app.core.permissions import UserRole, require_role
 from app.database.session import get_db
+from app.schemas.availability import PatientAvailabilityPublic, SetPatientAvailabilityRequest
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.patient import PatientCreate, PatientPublic, PatientUpdate
-from app.services import patient_service
+from app.services import availability_service, patient_service
 
 router = APIRouter()
 
@@ -95,3 +96,34 @@ def delete_patient(
     db: Session = Depends(get_db),
 ) -> None:
     patient_service.soft_delete_patient(db, clinic_id=clinic_id, patient_id=patient_id)
+
+
+@router.get(
+    "/{patient_id}/availability",
+    response_model=list[PatientAvailabilityPublic],
+    dependencies=[Depends(require_role(*_READ_ROLES))],
+)
+def get_patient_availability(
+    patient_id: uuid.UUID,
+    clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    db: Session = Depends(get_db),
+) -> list[PatientAvailabilityPublic]:
+    patient_service.get_patient(db, clinic_id=clinic_id, patient_id=patient_id)  # 404s for cross-clinic/unknown ids
+    rows = availability_service.get_patient_availability(db, patient_id=patient_id)
+    return [PatientAvailabilityPublic.model_validate(r) for r in rows]
+
+
+@router.put(
+    "/{patient_id}/availability",
+    response_model=list[PatientAvailabilityPublic],
+    dependencies=[Depends(require_role(*_WRITE_ROLES))],
+)
+def set_patient_availability(
+    patient_id: uuid.UUID,
+    payload: SetPatientAvailabilityRequest,
+    clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    db: Session = Depends(get_db),
+) -> list[PatientAvailabilityPublic]:
+    patient_service.get_patient(db, clinic_id=clinic_id, patient_id=patient_id)
+    rows = availability_service.set_patient_availability(db, patient_id=patient_id, rules=payload.rules)
+    return [PatientAvailabilityPublic.model_validate(r) for r in rows]

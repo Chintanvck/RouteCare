@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # CORS - comma-separated origins, e.g. "http://localhost:3000,https://app.routecare.ai"
     CORS_ORIGINS: str = "http://localhost:3000"
 
+    # Patient import (Phase 3)
+    IMPORT_STORAGE_DIR: str = "var/imports"
+    IMPORT_MAX_FILE_SIZE_BYTES: int = Field(default=10 * 1024 * 1024, gt=0)  # 10 MB
+
+    # Celery - dev/demo convenience only. Runs tasks synchronously in-process
+    # instead of dispatching to a worker via Redis. Never set true in production.
+    CELERY_TASK_ALWAYS_EAGER: bool = False
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
@@ -63,6 +71,10 @@ class Settings(BaseSettings):
             )
         if _INSECURE_DB_PASSWORD_MARKER in self.DATABASE_URL:
             problems.append("DATABASE_URL still contains the development default password.")
+        if self.CELERY_TASK_ALWAYS_EAGER:
+            problems.append(
+                "CELERY_TASK_ALWAYS_EAGER must be false in production - background jobs would block requests."
+            )
 
         if problems:
             raise ValueError("Insecure production configuration detected:\n- " + "\n- ".join(problems))
