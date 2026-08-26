@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     TRAVEL_TIME_CACHE_TTL_SECONDS: int = Field(default=60 * 60 * 24, gt=0)  # 24 hours
     MAPS_MAX_MATRIX_POINTS: int = Field(default=25, gt=1)
 
+    # Schedule optimization (Phase 6). Weights are relative to a fixed 1.0 on
+    # total drive-minutes, the task's explicit primary objective - see
+    # app/services/optimization_engine.py's docstring for the full objective
+    # function. Deliberately configurable rather than hardcoded, per the
+    # task's explicit "do not hardcode business assumptions" instruction.
+    OPTIMIZATION_GAP_WEIGHT: float = Field(default=0.1, ge=0)
+    OPTIMIZATION_CHANGE_PENALTY_WEIGHT: float = Field(default=2.0, ge=0)
+    OPTIMIZATION_MAX_SOLVE_SECONDS: float = Field(default=10.0, gt=0)
+    OPTIMIZATION_DEFAULT_SEARCH_DAYS: int = Field(default=14, gt=0)
+    OPTIMIZATION_MAX_APPOINTMENTS_PER_DAY: int = Field(default=20, gt=1)
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]

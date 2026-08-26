@@ -35,4 +35,4 @@ celery_app.conf.update(
     task_always_eager=settings.CELERY_TASK_ALWAYS_EAGER,
 )
 
-from app.workers import import_tasks, tasks  # noqa: E402,F401
+from app.workers import import_tasks, optimization_tasks, tasks  # noqa: E402,F401

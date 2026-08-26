@@ -113,12 +113,88 @@ RouteCare AI uses **PostgreSQL 16 with PostGIS**, managed through
   database level (`docker/postgres/init.sql`) for whenever that's
   actually needed.
 
-## What comes next (Phase 6+)
+## As of Phase 6 (Schedule Optimization Engine)
 
-Per `docs/04_Database_Design.md` and `docs/11_Claude_Development_Prompts.md`,
-the following tables are introduced in later phases:
+- Migration `0006_create_optimization_tables` adds `optimization_requests`
+  and `optimization_recommendations`, per `docs/04_Database_Design.md`
+  sections 11-12 - extended with the fields the two optimization modes
+  actually need. See `backend/app/models/optimization.py`'s docstring
+  for the full list and reasoning; briefly:
+  - `optimization_requests.mode` (`DAY_SCHEDULE_OPTIMIZATION` /
+    `NEW_PATIENT_PLACEMENT`) - not in the design doc, but a request is
+    meaningless without knowing which problem it solves.
+  - `target_date`/`search_days`/`new_patient_id`/
+    `new_appointment_duration_minutes` hold each mode's own inputs (all
+    nullable - only one mode's fields apply to any given row).
+  - `accepted_recommendation_id` lives on the *request*, not a status
+    enum on each recommendation - and is a plain `UUID` column, **not a
+    foreign key**, specifically to avoid a circular FK between the two
+    tables (each would otherwise need to reference the other).
+    Application code enforces it, not the database. **Superseded in
+    Phase 7** - see below.
+  - `optimization_recommendations.explanation`/`solver_status` are
+    additions beyond the design doc's minimal column list - a
+    recommendation with no human-readable explanation or way to tell
+    `OPTIMAL`/`FEASIBLE`/`INFEASIBLE` apart isn't useful to a scheduler
+    deciding whether to trust it.
+- Indexed on `clinic_id` and `therapist_id` (`optimization_requests`) and
+  `optimization_request_id` (`optimization_recommendations`), per the
+  Database Design doc's indexing strategy (section 18: "Optimization:
+  therapist_id, created_at").
+- **`appointment_routes` (docs/04 section 10) is still not implemented.**
+  It's appointment-scoped route/travel data; this phase's recommendation
+  data instead stores proposed appointment times directly in
+  `recommendation_data` (JSONB) and replays them through the existing
+  `appointment_service.create_appointment`/`update_appointment` on
+  accept - there's no need for a separate per-appointment route table
+  when the accepted outcome is just an ordinary `Appointment` row.
+  Revisit if a persistent, queryable "route history" becomes a real
+  requirement.
+- PostGIS remains unused, same as Phase 5 - the optimization engine
+  consumes `app.services.travel_time_service`'s existing Redis-cached
+  travel-time matrix rather than any spatial SQL.
 
-`appointment_routes`, `optimization_requests`, `optimization_recommendations`.
+## As of Phase 7 (Optimization Workflow, What-If & Weekly Mode)
+
+Migration `0007_optimization_workflow_improvements` revisits both
+compromises Phase 6 explicitly flagged for review:
+
+- **`optimization_recommendations.marginal_drive_minutes`/
+  `marginal_distance_miles` added (nullable).** Phase 6's
+  `NEW_PATIENT_PLACEMENT` mode had overloaded `total_drive_minutes` to
+  mean "marginal added travel" instead of "the day's total," unlike
+  every other mode. Rather than a bare rename, Phase 7 fixed the
+  semantics properly: `total_drive_minutes`/`total_distance_miles` now
+  always mean the full day's total after applying the recommendation
+  (baseline + marginal, computed via the existing
+  `engine.fixed_order_metrics`), for every mode consistently; the new
+  `marginal_*` columns hold `NEW_PATIENT_PLACEMENT`'s insertion-specific
+  detail on top of that, and stay `NULL` for every other mode.
+- **`optimization_requests.accepted_recommendation_id` dropped.**
+  Rather than adding a real foreign key (the option Phase 7's task asked
+  to evaluate), the field was removed entirely and acceptance state
+  moved onto `optimization_recommendations` itself
+  (`accepted_at`/`rejected_at`, both nullable `TIMESTAMPTZ`) - this
+  doesn't just resolve the circular-FK question, it eliminates the need
+  for a back-reference at all, and is also what `WEEK_SCHEDULE_OPTIMIZATION`
+  requires structurally: each of a week's 7 recommendations must be
+  acceptable independently, which a single slot on the request could
+  never represent.
+- **`optimization_recommendations.target_date` added (`NOT NULL`,
+  backfilled from the parent request for pre-existing rows).** Every
+  recommendation now carries its own date rather than inheriting the
+  request's single `target_date` - required so `WEEK_SCHEDULE_OPTIMIZATION`'s
+  7 per-day rows (one per weekday) are distinguishable at all, and
+  incidentally makes `NEW_PATIENT_PLACEMENT`'s multi-day candidate
+  slots clearer too.
+- `optimization_mode`'s enum gains `WEEK_SCHEDULE_OPTIMIZATION` -
+  `ALTER TYPE ... ADD VALUE`, safe inside a transaction on this
+  project's PostgreSQL 16 as long as the new value isn't used in the
+  same transaction (it isn't).
+- No new tables. Weekly optimization reuses `optimization_requests`/
+  `optimization_recommendations` unchanged in shape (just tagged with
+  the new mode + per-row `target_date`) - per the task's explicit
+  "orchestrate the existing model, don't duplicate it" instruction.
 
 Every business table will include `clinic_id` for multi-tenant isolation,
 and most will include `created_at`/`updated_at` (and `deleted_at` for

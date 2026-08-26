@@ -254,6 +254,19 @@ def sync_import_tasks(monkeypatch: pytest.MonkeyPatch, db_session: Session):
     monkeypatch.setattr(execute_import_task, "delay", fake_execute_delay)
 
 
+@pytest.fixture()
+def sync_optimization_tasks(monkeypatch: pytest.MonkeyPatch, db_session: Session):
+    """Redirects the optimization Celery task's .delay() call to run the same service-layer logic
+    synchronously against the test's SQLite session - mirrors sync_import_tasks."""
+    from app.services import optimization_service
+    from app.workers.optimization_tasks import run_optimization_task
+
+    def fake_delay(optimization_request_id: str) -> None:
+        optimization_service.run_optimization(db_session, uuid.UUID(optimization_request_id))
+
+    monkeypatch.setattr(run_optimization_task, "delay", fake_delay)
+
+
 def make_therapist(
     db_session: Session,
     clinic: Clinic,

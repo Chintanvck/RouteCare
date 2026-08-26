@@ -33,6 +33,9 @@ export function AppHeader() {
           <Link href="/map" className="text-sm text-muted-foreground hover:text-foreground">
             Map
           </Link>
+          <Link href="/optimize" className="text-sm text-muted-foreground hover:text-foreground">
+            Optimize
+          </Link>
         </nav>
         <Button variant="ghost" size="sm" onClick={handleLogout}>
           Log out

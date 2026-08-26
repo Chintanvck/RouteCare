@@ -3,16 +3,22 @@
 AI-powered scheduling and route optimization platform for home healthcare
 providers (therapists, PTAs, nurses, and the agencies that employ them).
 
-> **Status: Phase 5 — Maps & Travel-Time Engine.**
+> **Status: Phase 7 — Optimization Workflow, What-If & Weekly Mode.**
 > Auth/RBAC (Phase 1B), shared backend infrastructure (Phase 1C), patient
-> management (Phase 2), TheraOffice Excel import (Phase 3), and therapist
-> management/scheduling (Phase 4) are in place. Patients and therapists
-> can now be geocoded (Nominatim), driving distance/time between any two
-> locations is available (OSRM, Redis-cached), and a map view shows
-> patient/therapist locations with a travel-time calculator. AI schedule
-> optimization and route ordering are still not built - this phase is
-> the location/travel-time *foundation* the optimization engine will
-> consume, not the engine itself. See
+> management (Phase 2), TheraOffice Excel import (Phase 3), therapist
+> management/scheduling (Phase 4), the maps/travel-time foundation
+> (Phase 5), and the schedule optimization engine (Phase 6) are in place.
+> The optimizer now has a full user-facing workflow at `/optimize`: run
+> day, week, or new-patient optimization; watch it progress; review each
+> recommendation (driving time, distance, efficiency, a current-vs-
+> recommended comparison table); accept, reject, or modify it. What-If
+> moved from a backend-only endpoint to a real feature - test moving,
+> adding, or removing an appointment and see the impact before applying
+> anything for real. Weekly optimization orchestrates the *same* day-
+> schedule algorithm once per day rather than a new one. The optimizer
+> still only ever *recommends* - nothing changes on the calendar until a
+> human explicitly accepts or applies, which always re-validates against
+> the live schedule first. See
 > [`docs/10_Development_Roadmap.md`](docs/10_Development_Roadmap.md)
 > for what's built in each subsequent phase, and
 > [`docs/13_Coding_Standards.md`](docs/13_Coding_Standards.md) for how
@@ -28,7 +34,7 @@ providers (therapists, PTAs, nurses, and the agencies that employ them).
 | Backend        | FastAPI (Python), SQLAlchemy, Alembic    |
 | Database       | PostgreSQL + PostGIS                     |
 | Background jobs| Celery + Redis                           |
-| Optimization   | Google OR-Tools *(added Phase 6)*        |
+| Optimization   | Google OR-Tools (CP-SAT) *(added Phase 6)* |
 | Maps           | OpenStreetMap, Nominatim, OSRM *(added Phase 5)* |
 
 Full architecture rationale lives in `docs/03_System_Architecture.md`.
@@ -68,21 +74,25 @@ backend/app/
 ├── database/                # SQLAlchemy engine, session, declarative Base, portable GUID type, pagination.paginate()
 ├── models/                  # ORM models: Clinic, User, RefreshToken, PasswordResetToken, AuditLog, Patient,
 │                            # ImportJob, ImportRow, ImportRowError, Therapist, TherapistAvailability,
-│                            # PatientAvailability, Appointment, mixins.py (GeocodingStatus lives on patient.py)
+│                            # PatientAvailability, Appointment, OptimizationRequest,
+│                            # OptimizationRecommendation, mixins.py (GeocodingStatus lives on patient.py)
 ├── modules/
 │   ├── auth/                 # register/login/logout/refresh/change-password/reset/me router
 │   ├── patients/              # patient list/create/get/update/delete/geocode + patient availability router
 │   ├── imports/                # upload/mapping/preview/errors/confirm router
 │   ├── therapists/              # therapist list/create/get/update/geocode + weekly availability router
 │   ├── scheduling/               # appointment list(calendar)/create/get/update/cancel + /validate router
-│   └── maps/                      # /travel-time, /travel-time-matrix (read-only, all clinic roles)
+│   ├── maps/                      # /travel-time, /travel-time-matrix (read-only, all clinic roles)
+│   └── optimization/               # /requests, .../recommendations, .../accept, .../reject, /what-if, /what-if/apply
 ├── schemas/                 # Pydantic request/response schemas; common.py has PaginationParams/PaginatedResponse
 ├── services/                # business logic: auth_service.py, patient_service.py, geocoding.py,
 │                            # import_service.py, column_mapping.py, duplicate_detection.py,
 │                            # file_validation.py, excel_parser.py, therapist_service.py,
 │                            # availability_service.py, appointment_service.py, scheduling_validation.py,
-│                            # routing.py, travel_time_service.py
-└── workers/                 # Celery app + tasks.py (demo) + import_tasks.py (validate/execute)
+│                            # routing.py, travel_time_service.py, optimization_engine.py (pure CP-SAT/
+│                            # insertion-search algorithms, no DB), optimization_service.py (orchestration)
+└── workers/                 # Celery app + tasks.py (demo) + import_tasks.py (validate/execute) +
+                              # optimization_tasks.py (run_optimization_task)
 ```
 
 Frontend layout:
@@ -95,7 +105,8 @@ frontend/
 │   ├── imports/patients/        # the 5-step import wizard page
 │   ├── therapists/               # list, new, and [id] (profile/edit + weekly availability) pages
 │   ├── schedule/                 # day/week calendar, appointment create/edit/cancel
-│   └── map/                       # patient/therapist location map + travel-time calculator
+│   ├── map/                       # patient/therapist location map + travel-time calculator
+│   └── optimize/                   # optimization dashboard - run/status/recommendations/What-If
 ├── components/
 │   ├── ui/                     # shadcn/ui primitives (button, input, table, alert-dialog, progress, ...)
 │   ├── layout/                 # AppHeader (nav + logout)
@@ -103,13 +114,15 @@ frontend/
 │   ├── imports/                 # ImportStepper, Upload/Mapping/Preview/Results step components
 │   ├── therapists/               # TherapistForm, AvailabilityEditor
 │   ├── scheduling/                # AppointmentForm (live conflict check via /validate), AppointmentCard
-│   └── maps/                       # LocationCard (geocode status + action), MapView (Leaflet, dynamic-
-│                                   # imported client-only), TravelTimeCalculator
+│   ├── maps/                       # LocationCard (geocode status + action), MapView (Leaflet, dynamic-
+│   │                               # imported client-only), TravelTimeCalculator
+│   └── optimization/                # RecommendationCard (compare/accept/reject/modify), WhatIfPanel
+│                                    # (MOVE/ADD/REMOVE scenarios, evaluate + apply)
 ├── lib/
 │   ├── api.ts                  # fetch wrapper (JSON + multipart), standardized ApiError, 401 -> refresh -> retry
 │   ├── auth.ts                  # localStorage token storage
 │   └── use-require-auth.ts      # client-side route guard
-└── types/                      # TS types mirroring backend/app/schemas/{patient,import_job,therapist,appointment,maps}.py
+└── types/                      # TS types mirroring backend/app/schemas/{patient,import_job,therapist,appointment,maps,optimization}.py
 ```
 
 ---
@@ -197,8 +210,13 @@ adds `patients`; `0003_create_import_tables` adds `imports`,
 adds `therapists`, `therapist_availability`, `patient_availability`,
 and `appointments`; `0005_add_geocoding_fields` adds `geocoding_status`/
 `geocoded_at`/`location_verified` to `patients` and `therapists` (no new
-tables - travel-time results are cached in Redis, not persisted). All
-target PostgreSQL:
+tables - travel-time results are cached in Redis, not persisted);
+`0006_create_optimization_tables` adds `optimization_requests` and
+`optimization_recommendations`; `0007_optimization_workflow_improvements`
+adds the `WEEK_SCHEDULE_OPTIMIZATION` enum value, `target_date`/
+`accepted_at`/`rejected_at`/`marginal_drive_minutes`/`marginal_distance_miles`
+on `optimization_recommendations`, and drops
+`optimization_requests.accepted_recommendation_id`. All target PostgreSQL:
 
 ```bash
 cd backend
@@ -558,6 +576,154 @@ map.
 
 ---
 
+## Schedule Optimization Engine
+
+Introduced backend-only in Phase 6; Phase 7 (below) adds the user-facing
+workflow, What-If apply, and weekly mode on top of the same engine.
+`POST /api/v1/optimization/requests` (create + queue),
+`GET /api/v1/optimization/requests/{id}` (status),
+`GET /api/v1/optimization/requests/{id}/recommendations`,
+`POST .../recommendations/{id}/accept`. Available to every clinic role; a
+`THERAPIST` caller is restricted to their own schedule, same
+`restrict_to_therapist_id` pattern as `app.modules.scheduling.router`.
+
+- **Two modes, two different algorithms - see
+  `app/services/optimization_engine.py`'s module docstring for the full
+  reasoning.** `DAY_SCHEDULE_OPTIMIZATION` (re-order one therapist's
+  existing day) is solved with **OR-Tools CP-SAT**: a permutation
+  variable (`AllDifferent`) picks the visit order, per-visit start-time
+  domains are built from the intersection of therapist working
+  hours/breaks and patient availability
+  (`compute_allowed_start_minutes`), and travel time between consecutive
+  stops is looked up via `AddElement` on a flattened travel-time matrix
+  indexed by an affine expression of the order variables (no
+  variable-times-variable multiplication needed - `AddElement` is
+  Or-Tools' native "index into an array by variable" primitive).
+  `NEW_PATIENT_PLACEMENT` (find a slot for one not-yet-scheduled
+  patient) is a bounded insertion-point search instead - it never
+  disturbs any existing appointment, so the problem is "evaluate
+  inserting before/between/after each day's visits and rank by marginal
+  added travel time," not a joint reordering a solver would earn its
+  keep on.
+- **Objective**: `minimize total_drive_minutes*1.0 + total_gap_minutes*OPTIMIZATION_GAP_WEIGHT
+  + appointments_moved*OPTIMIZATION_CHANGE_PENALTY_WEIGHT` - drive time
+  is the anchor (task's explicit primary objective), gaps and
+  unnecessary reshuffling are configurable soft penalties, not
+  hardcoded. Distance is reported but not separately weighted - it's
+  tightly correlated with drive time from the same routing calculation.
+- **Hard constraints never silently violated.** If CP-SAT reports
+  `INFEASIBLE`, or the insertion search finds no feasible slot anywhere
+  in the window, the request still completes normally
+  (`status=COMPLETED`) with a single recommendation flagged
+  `solver_status="INFEASIBLE"` and a clear explanation - "no feasible
+  schedule" is a valid, expected answer, never a failure. `FAILED` is
+  reserved for the optimizer not being able to run at all (an
+  ungeocoded patient/therapist, an unexpected error) - see
+  `app/services/optimization_service.run_optimization`'s docstring.
+- **Acceptance replays through the existing, already-validated
+  appointment code - it never mutates an appointment directly except in
+  one specific case.** `NEW_PATIENT_PLACEMENT` acceptance calls
+  `appointment_service.create_appointment` unchanged, getting full
+  re-validation for free. `DAY_SCHEDULE_OPTIMIZATION` acceptance
+  deliberately does *not* call `update_appointment` in a loop - doing so
+  one appointment at a time against the live DB produces false conflicts
+  whenever two appointments are effectively swapping slots (each would
+  still see the other's pre-move time as "existing"). Instead it
+  re-validates the *entire* proposed day at once (every appointment's
+  final position checked for overlap together, plus each changed
+  appointment's working-hours/patient-availability rules via the same
+  pure `scheduling_validation` functions create/update use) and only
+  then applies every change in a single transaction. Any drift since the
+  recommendation was generated - a cancelled appointment, a schedule
+  change, an appointment that no longer exists - is rejected as
+  `STALE_RECOMMENDATION`, never silently applied.
+- **Background processing.** `app/workers/optimization_tasks.py`
+  dispatches to `optimization_service.run_optimization`, same
+  `CELERY_TASK_ALWAYS_EAGER` dev-mode pattern as imports. Creating a
+  request always returns immediately (`status=PENDING`) - the solve
+  never runs inside the request/response cycle.
+- **What-If evaluation is stateless; applying is real.**
+  `POST /optimization/what-if` creates no `OptimizationRequest`,
+  persists nothing - it reuses `appointment_service.validate_appointment`
+  for feasibility and a shared `_day_metrics` helper (built on the same
+  pure `optimize_day_schedule`-adjacent `fixed_order_metrics` function)
+  to report drive-time/distance before vs. after. Phase 7 adds
+  `POST /optimization/what-if/apply`, which commits the change for real -
+  see the Phase 7 section below.
+- **Solver limits are configurable, not hardcoded.**
+  `OPTIMIZATION_MAX_SOLVE_SECONDS` (default 10s) caps CP-SAT's search;
+  it returns the best `FEASIBLE` solution found rather than failing if
+  the time limit is hit before proving optimality.
+  `OPTIMIZATION_MAX_APPOINTMENTS_PER_DAY` (default 20) bounds the
+  problem size a single `DAY_SCHEDULE_OPTIMIZATION` request will
+  attempt, per the "don't optimize unnecessarily large search spaces"
+  requirement.
+
+---
+
+## Optimization Workflow, What-If & Weekly Mode
+
+Backend: `POST /api/v1/optimization/requests/{id}/recommendations/{id}/reject`
+(new), `POST /api/v1/optimization/what-if/apply` (new - commits a
+What-If scenario for real), and `mode: "WEEK_SCHEDULE_OPTIMIZATION"` on
+the existing `POST /optimization/requests`. Frontend: `/optimize` - a
+full dashboard (`app/optimize/page.tsx`) to select therapist/mode/date,
+start optimization, watch it progress, review recommendations, and
+accept/reject/modify - plus a standalone `WhatIfPanel`
+(`components/optimization/what-if-panel.tsx`) usable on its own or
+pre-filled from a recommendation's "Modify" action.
+
+- **Weekly mode orchestrates the existing day algorithm - it does not
+  duplicate it.** `_run_week_schedule_optimization`
+  (`app/services/optimization_service.py`) snaps `target_date` to that
+  week's Monday and calls the same `_compute_day_schedule_recommendation`
+  function once per day (Monday-Sunday), the identical function a plain
+  `DAY_SCHEDULE_OPTIMIZATION` request calls once. A day that can't even
+  be attempted (e.g. an ungeocoded patient) becomes an `ERROR`-flagged
+  recommendation for *that day only* - it never fails the whole week.
+  Redis already caches travel-time by clinic+coordinate pair (Phase 5),
+  so a patient seen on multiple days that week is only ever routed once
+  - no new caching logic was needed for "reuse travel-time data."
+- **Four distinguishable per-day outcomes**, all represented as an
+  `OptimizationRecommendation` row tagged with its own `target_date`
+  (new this phase - previously every recommendation shared its parent
+  request's single date): a real reorder (`solver_status` `OPTIMAL`/
+  `FEASIBLE`, `recommendation_data.appointments` non-empty), no changes
+  needed (`OPTIMAL`, empty `appointments`, `reason_codes: ["NO_APPOINTMENTS"]`
+  or `["ALREADY_OPTIMAL"]`), no feasible schedule (`INFEASIBLE`), or a
+  day that failed to even run (`ERROR`, `explanation` holds why).
+- **Acceptance is per-recommendation, not per-request** (see the schema
+  section below) - each of a week's 7 recommendations can be accepted or
+  left alone independently. The one exception: `NEW_PATIENT_PLACEMENT`'s
+  up to 3 ranked alternatives all propose scheduling the *same* new
+  patient, so accepting one blocks the others
+  (`RECOMMENDATION_ALREADY_ACCEPTED`) - day/week recommendations never
+  compete with each other by construction (exactly one per date).
+- **Reject is a lightweight, reversible marker**
+  (`OptimizationRecommendation.rejected_at`) - not a lock. A rejected
+  recommendation can still be accepted later (a change of mind), which
+  clears `rejected_at` cleanly; an already-*accepted* recommendation
+  cannot be rejected.
+- **"Modify" is not a separate backend concept - it's What-If.** The
+  recommendation review UI's "Modify" button on a changed appointment
+  opens the `WhatIfPanel` pre-filled with that appointment/date/time, so
+  the user can tweak it, see the live feasibility/impact, and apply
+  their own version instead of the AI's - reusing the exact same
+  evaluate/apply endpoints a standalone What-If scenario uses, rather
+  than inventing a second "modify recommendation" code path.
+- **What-If now supports three scenario types** (`MOVE`, `ADD`, `REMOVE`)
+  and an optional duration override on `MOVE`/`ADD`, covering every
+  example the task listed (move to another time/day, add a new patient,
+  remove an appointment, change duration). `POST /optimization/what-if/apply`
+  re-validates against the *live* database via the same
+  `appointment_service.validate_appointment`/`create_appointment`/
+  `update_appointment`/`cancel_appointment` every other mutation path
+  uses - never a cached/precomputed result - so a scenario that's gone
+  stale between evaluate and apply (someone else changed the schedule in
+  the meantime) is rejected with a clear message, not silently applied.
+
+---
+
 ## Environment Variables
 
 See `.env.example` (root), `backend/.env.example`, and
@@ -576,6 +742,10 @@ See `.env.example` (root), `backend/.env.example`, and
 | `OSRM_BASE_URL` | Routing provider base URL (default the public OSRM demo server) |
 | `GEOCODE_CACHE_TTL_SECONDS` / `TRAVEL_TIME_CACHE_TTL_SECONDS` | Redis cache lifetimes for geocoding/travel-time results |
 | `MAPS_MAX_MATRIX_POINTS` | Cap on points per `/maps/travel-time-matrix` request (default 25) |
+| `OPTIMIZATION_MAX_SOLVE_SECONDS` | CP-SAT time limit per `DAY_SCHEDULE_OPTIMIZATION` solve (default 10s) |
+| `OPTIMIZATION_GAP_WEIGHT` / `OPTIMIZATION_CHANGE_PENALTY_WEIGHT` | Soft-constraint weights, relative to 1.0 on drive-minutes |
+| `OPTIMIZATION_DEFAULT_SEARCH_DAYS` | Default search window for `NEW_PATIENT_PLACEMENT` (default 14 days) |
+| `OPTIMIZATION_MAX_APPOINTMENTS_PER_DAY` | Solver problem-size cap per day (default 20) |
 | `NEXT_PUBLIC_API_BASE_URL` | Where the frontend expects the API |
 
 ---
@@ -596,9 +766,24 @@ See `.env.example` (root), `backend/.env.example`, and
   probes a `bcrypt.__about__` attribute that no longer exists, so every
   hash/verify call raises. `app/core/security.py` calls the `bcrypt`
   library directly instead.
-- **Optimization/analytics modules are still empty placeholders** — auth,
-  patients, imports, therapist management/scheduling (Phase 4), and
-  maps/travel-time (Phase 5) are implemented so far.
+- **Analytics module is still an empty placeholder** — auth, patients,
+  imports, therapist management/scheduling (Phase 4), maps/travel-time
+  (Phase 5), schedule optimization (Phase 6), and the optimization
+  workflow/What-If/weekly mode (Phase 7) are implemented so far.
+- **`app.services.routing`'s OSRM calls each open a fresh connection**
+  (`httpx.get(...)` per call, no shared `httpx.Client`) rather than
+  reusing a pooled connection - fine at this app's current scale, but
+  under real traffic (or when Redis is briefly cold and several
+  uncached lookups fire back-to-back, e.g. What-If's before/after
+  comparison) the repeated connection/TLS-handshake overhead is real
+  and avoidable. Worth switching to a shared, connection-pooled client
+  if routing latency becomes a concern.
+- **Weekly optimization is one therapist at a time.** There's no
+  bulk/multi-therapist weekly job (Phase 7's task explicitly listed this
+  as an existing limitation to leave alone, not fix) - a clinic-wide
+  "optimize everyone's week" would mean either N separate requests from
+  the frontend or a new orchestration layer above
+  `WEEK_SCHEDULE_OPTIMIZATION`, neither built here.
 - **Public Nominatim/OSRM demo servers, not a production-grade
   deployment.** Both have real usage limits (Nominatim in particular
   caps at roughly one request/second) - fine for development and this

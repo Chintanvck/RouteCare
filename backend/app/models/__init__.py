@@ -13,6 +13,12 @@ from app.models.clinic import Clinic
 from app.models.import_job import ImportJob
 from app.models.import_row import ImportRow
 from app.models.import_row_error import ImportRowError
+from app.models.optimization import (
+    OptimizationMode,
+    OptimizationRecommendation,
+    OptimizationRequest,
+    OptimizationStatus,
+)
 from app.models.password_reset_token import PasswordResetToken
 from app.models.patient import GeocodingStatus, Patient
 from app.models.patient_availability import PatientAvailability
@@ -29,6 +35,10 @@ __all__ = [
     "ImportRow",
     "ImportRowError",
     "GeocodingStatus",
+    "OptimizationMode",
+    "OptimizationRecommendation",
+    "OptimizationRequest",
+    "OptimizationStatus",
     "PasswordResetToken",
     "Patient",
     "PatientAvailability",

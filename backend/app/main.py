@@ -20,6 +20,7 @@ from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddlew
 from app.modules.auth.router import router as auth_router
 from app.modules.imports.router import router as imports_router
 from app.modules.maps.router import router as maps_router
+from app.modules.optimization.router import router as optimization_router
 from app.modules.patients.router import router as patients_router
 from app.modules.scheduling.router import router as scheduling_router
 from app.modules.therapists.router import router as therapists_router
@@ -70,6 +71,14 @@ tags_metadata = [
         "every clinic role. Geocoding a specific patient/therapist stays on their own routers "
         "(`POST /patients/{id}/geocode`, `POST /therapists/{id}/geocode`).",
     },
+    {
+        "name": "optimization",
+        "description": "AI-recommended schedule changes (OR-Tools CP-SAT day re-ordering, and new-"
+        "patient slot placement) and a stateless What-If evaluator. The optimizer only ever "
+        "recommends - nothing is applied to the calendar until `POST .../accept`, which re-validates "
+        "every hard constraint before touching an appointment. Available to every clinic role; "
+        "therapists are restricted to their own schedule.",
+    },
 ]
 
 app = FastAPI(
@@ -111,6 +120,7 @@ app.include_router(imports_router, prefix=f"{settings.API_V1_PREFIX}/imports", t
 app.include_router(therapists_router, prefix=f"{settings.API_V1_PREFIX}/therapists", tags=["therapists"])
 app.include_router(scheduling_router, prefix=f"{settings.API_V1_PREFIX}/appointments", tags=["scheduling"])
 app.include_router(maps_router, prefix=f"{settings.API_V1_PREFIX}/maps", tags=["maps"])
+app.include_router(optimization_router, prefix=f"{settings.API_V1_PREFIX}/optimization", tags=["optimization"])
 
 
 @app.get("/health", tags=["health"])
@@ -150,5 +160,5 @@ def readiness() -> JSONResponse:
     )
 
 
-# Remaining feature routers (optimization, analytics, ...) are
-# included here as each module is implemented in later phases.
+# Remaining feature routers (analytics, ...) are included here as each
+# module is implemented in later phases.
