@@ -91,11 +91,20 @@ export function RecommendationCard({
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
           <Metric label="Efficiency" value={`${Math.round(recommendation.efficiency_score)}%`} />
-          <Metric label="Driving" value={`${recommendation.total_drive_minutes} min`} />
-          <Metric label="Distance" value={`${recommendation.total_distance_miles} mi`} />
-          {recommendation.time_saved_minutes !== null && recommendation.time_saved_minutes !== undefined && (
-            <Metric label="Time saved" value={`${recommendation.time_saved_minutes} min`} />
+          {recommendation.time_saved_minutes !== null && recommendation.time_saved_minutes !== undefined ? (
+            <>
+              {/* Before = the day's driving total the recommendation started from - same
+                  after + saved = before arithmetic the analytics dashboard already uses
+                  (AcceptedOptimizationExample.before_drive_minutes) - shown explicitly here too so
+                  "what changed" never requires the user to do that subtraction themselves. */}
+              <Metric label="Driving (before)" value={`${recommendation.total_drive_minutes + recommendation.time_saved_minutes} min`} />
+              <Metric label="Driving (after)" value={`${recommendation.total_drive_minutes} min`} />
+              <Metric label="Time saved" value={`${recommendation.time_saved_minutes} min`} />
+            </>
+          ) : (
+            <Metric label="Driving" value={`${recommendation.total_drive_minutes} min`} />
           )}
+          <Metric label="Distance" value={`${recommendation.total_distance_miles} mi`} />
           {recommendation.marginal_drive_minutes !== null && recommendation.marginal_drive_minutes !== undefined && (
             <Metric label="Added driving" value={`${recommendation.marginal_drive_minutes} min`} />
           )}

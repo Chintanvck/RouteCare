@@ -230,6 +230,34 @@ def _patient_day_windows(db: Session, *, patient_id: uuid.UUID, day_of_week: int
     return not_available, permitted
 
 
+def _patient_day_windows_batch(
+    db: Session, *, patient_ids: list[uuid.UUID], day_of_week: int
+) -> dict[uuid.UUID, tuple[list, list]]:
+    """Same shape as _patient_day_windows, for every patient in `patient_ids` at once - one query
+    instead of one per patient (Phase 10 perf fix: _compute_day_schedule_recommendation used to call
+    _patient_day_windows once per appointment in a loop, an N+1 query pattern on the optimizer's
+    main hot path, bounded but real at OPTIMIZATION_MAX_APPOINTMENTS_PER_DAY). A patient with no
+    rows for this day_of_week simply isn't a key in the result - callers should default to ([], [])
+    via `.get(patient_id, ([], []))`, matching _patient_day_windows' own "no rows means
+    unrestricted" contract."""
+    if not patient_ids:
+        return {}
+    rows = (
+        db.query(PatientAvailability)
+        .filter(PatientAvailability.patient_id.in_(patient_ids), PatientAvailability.day_of_week == day_of_week)
+        .all()
+    )
+    result: dict[uuid.UUID, tuple[list, list]] = {}
+    for row in rows:
+        not_available, permitted = result.setdefault(row.patient_id, ([], []))
+        window = (_time_to_minutes(row.start_time), _time_to_minutes(row.end_time))
+        if row.preference_type == PatientAvailabilityPreference.NOT_AVAILABLE:
+            not_available.append(window)
+        else:
+            permitted.append(window)
+    return result
+
+
 def build_travel_matrix(
     *, clinic_id: uuid.UUID, therapist: Therapist, patient_points: list[LocationPoint]
 ) -> list[list[engine.TravelLeg | None]]:
@@ -318,10 +346,13 @@ def _compute_day_schedule_recommendation(
         raise _OptimizationInputError(f"The following patients have not been geocoded yet: {', '.join(ungeocoded)}.")
 
     working_windows, break_windows = _therapist_day_windows(db, therapist_id=therapist.id, day_of_week=day_of_week)
+    patient_windows = _patient_day_windows_batch(
+        db, patient_ids=[a.patient_id for a in appointments], day_of_week=day_of_week
+    )
 
     visits = []
     for appt in appointments:
-        not_available, permitted = _patient_day_windows(db, patient_id=appt.patient_id, day_of_week=day_of_week)
+        not_available, permitted = patient_windows.get(appt.patient_id, ([], []))
         allowed = engine.compute_allowed_start_minutes(
             working_windows=working_windows,
             break_windows=break_windows,

@@ -91,6 +91,15 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
       return apiFetch<T>(path, { ...options, retryOn401: false });
     }
     clearTokens();
+    // The session is genuinely dead (no refresh token, or the server rejected it as expired/
+    // revoked) - a full navigation to /login is deliberate here rather than just clearing tokens
+    // and letting the original error bubble up. Every page that calls apiFetch would otherwise
+    // show its own ad-hoc "could not load" error text with no way back to a working session
+    // short of the user noticing and navigating away manually. useRequireAuth's own check only
+    // runs once on mount, so it can't catch a session that dies mid-visit on an already-loaded page.
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
   }
 
   if (!response.ok) {

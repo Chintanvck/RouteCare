@@ -43,6 +43,12 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
+      # uvicorn --reload's watchfiles backend relies on native OS filesystem-change events, which
+      # don't reliably propagate through Docker Desktop's bind-mount file sharing (confirmed via
+      # Phase 10 testing: an edited file was never picked up without this). Polling is slightly
+      # more CPU, but it's the only mode that's actually reliable across host OSes/file-sharing
+      # backends - see https://watchfiles.helpmanual.io/api/watch/#watchfiles.watch's force_polling.
+      WATCHFILES_FORCE_POLLING: "true"
     ports:
       - "${BACKEND_PORT}:8000"
     volumes:
@@ -84,6 +90,10 @@ services:
       - .env
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+      # Same reasoning as the backend's WATCHFILES_FORCE_POLLING above - webpack's default
+      # (native-event-based) watcher never saw host-side edits through the bind mount in testing;
+      # WATCHPACK_POLLING forces `next dev` to poll the filesystem instead.
+      WATCHPACK_POLLING: "true"
     ports:
       - "${FRONTEND_PORT}:3000"
     volumes:

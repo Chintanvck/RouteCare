@@ -3,26 +3,29 @@
 AI-powered scheduling and route optimization platform for home healthcare
 providers (therapists, PTAs, nurses, and the agencies that employ them).
 
-> **Status: Phase 7 — Optimization Workflow, What-If & Weekly Mode.**
+> **Status: Phase 10 — End-to-End MVP Validation & Clinic Pilot Prep.**
 > Auth/RBAC (Phase 1B), shared backend infrastructure (Phase 1C), patient
 > management (Phase 2), TheraOffice Excel import (Phase 3), therapist
 > management/scheduling (Phase 4), the maps/travel-time foundation
-> (Phase 5), and the schedule optimization engine (Phase 6) are in place.
-> The optimizer now has a full user-facing workflow at `/optimize`: run
-> day, week, or new-patient optimization; watch it progress; review each
-> recommendation (driving time, distance, efficiency, a current-vs-
-> recommended comparison table); accept, reject, or modify it. What-If
-> moved from a backend-only endpoint to a real feature - test moving,
-> adding, or removing an appointment and see the impact before applying
-> anything for real. Weekly optimization orchestrates the *same* day-
-> schedule algorithm once per day rather than a new one. The optimizer
-> still only ever *recommends* - nothing changes on the calendar until a
-> human explicitly accepts or applies, which always re-validates against
-> the live schedule first. See
-> [`docs/10_Development_Roadmap.md`](docs/10_Development_Roadmap.md)
-> for what's built in each subsequent phase, and
+> (Phase 5), the schedule optimization engine (Phase 6), the optimization
+> workflow/What-If/weekly mode (Phase 7), the operational analytics
+> dashboard (Phase 8), and production hardening - real rate limiting,
+> audit logging, pooled HTTP clients, request-size limits, non-root
+> production Docker images (Phase 9) - are all in place. Phase 10
+> validated the complete clinic workflow end-to-end (clinic setup →
+> import → schedule → optimize → accept/reject → What-If → analytics),
+> added a deterministic demo-data seed script, an end-to-end backend test
+> covering that full journey, and fixed the integration issues that
+> surfaced along the way (see "Known Notes" below for what was found and
+> fixed this phase). The optimizer still only ever *recommends* - nothing
+> changes on the calendar until a human explicitly accepts or applies it,
+> which always re-validates against the live schedule first. See
+> [`docs/10_Development_Roadmap.md`](docs/10_Development_Roadmap.md) for
+> the phase-by-phase history,
 > [`docs/13_Coding_Standards.md`](docs/13_Coding_Standards.md) for how
-> new modules should use the shared infrastructure.
+> modules use the shared infrastructure, and
+> [`docs/14_Production_Deployment.md`](docs/14_Production_Deployment.md)
+> for the actual deployment/security/backup runbook.
 
 ---
 
@@ -70,7 +73,8 @@ backend/app/
 │   ├── logging_config.py   # structured JSON logging
 │   ├── health.py           # check_database/check_redis for readiness
 │   ├── cache.py             # generic Redis-backed JSON get/set with TTL - geocoding/travel-time cache
-│   └── rate_limiting.py    # no-op extension points (no backend wired up yet)
+│   └── rate_limiting.py    # Redis-backed fixed-window limits (login/register/reset + per-user
+│                            # "expensive operation" limits) - see Phase 9 section below
 ├── database/                # SQLAlchemy engine, session, declarative Base, portable GUID type, pagination.paginate()
 ├── models/                  # ORM models: Clinic, User, RefreshToken, PasswordResetToken, AuditLog, Patient,
 │                            # ImportJob, ImportRow, ImportRowError, Therapist, TherapistAvailability,
@@ -83,17 +87,25 @@ backend/app/
 │   ├── therapists/              # therapist list/create/get/update/geocode + weekly availability router
 │   ├── scheduling/               # appointment list(calendar)/create/get/update/cancel + /validate router
 │   ├── maps/                      # /travel-time, /travel-time-matrix (read-only, all clinic roles)
-│   └── optimization/               # /requests, .../recommendations, .../accept, .../reject, /what-if, /what-if/apply
+│   ├── optimization/               # /requests, .../recommendations, .../accept, .../reject, /what-if, /what-if/apply
+│   └── analytics/                   # /overview, /therapists, /efficiency, /optimization-impact
 ├── schemas/                 # Pydantic request/response schemas; common.py has PaginationParams/PaginatedResponse
 ├── services/                # business logic: auth_service.py, patient_service.py, geocoding.py,
 │                            # import_service.py, column_mapping.py, duplicate_detection.py,
 │                            # file_validation.py, excel_parser.py, therapist_service.py,
 │                            # availability_service.py, appointment_service.py, scheduling_validation.py,
-│                            # routing.py, travel_time_service.py, optimization_engine.py (pure CP-SAT/
-│                            # insertion-search algorithms, no DB), optimization_service.py (orchestration)
-└── workers/                 # Celery app + tasks.py (demo) + import_tasks.py (validate/execute) +
+│                            # routing.py (pooled httpx.Client - see Phase 9), travel_time_service.py,
+│                            # optimization_engine.py (pure CP-SAT/insertion-search algorithms, no DB),
+│                            # optimization_service.py (orchestration), analytics_service.py (Phase 8
+│                            # metric computation), audit_service.py (Phase 9 - shared AuditLog writer)
+└── workers/                 # Celery app (task_soft_time_limit/task_time_limit - Phase 9) +
+                              # tasks.py (demo) + import_tasks.py (validate/execute) +
                               # optimization_tasks.py (run_optimization_task)
 ```
+
+Standalone dev utilities live in [`scripts/`](scripts/) at the repo root - notably
+[`scripts/seed_demo_data.py`](scripts/seed_demo_data.py) (Phase 10), which creates a full
+deterministic demo clinic through the real API; see "Demo Data" below.
 
 Frontend layout:
 
@@ -101,28 +113,36 @@ Frontend layout:
 frontend/
 ├── app/
 │   ├── login/                 # sign-in page
-│   ├── patients/               # list, new, and [id] (view/edit) pages
-│   ├── imports/patients/        # the 5-step import wizard page
-│   ├── therapists/               # list, new, and [id] (profile/edit + weekly availability) pages
-│   ├── schedule/                 # day/week calendar, appointment create/edit/cancel
-│   ├── map/                       # patient/therapist location map + travel-time calculator
-│   └── optimize/                   # optimization dashboard - run/status/recommendations/What-If
+│   ├── dashboard/               # analytics dashboard - date-range picker, stat tiles, charts,
+│   │                            # therapist drill-down, optimization-impact panel (Phase 8)
+│   ├── patients/                # list, new, and [id] (view/edit) pages
+│   ├── imports/patients/         # the 5-step import wizard page
+│   ├── therapists/                # list, new, and [id] (profile/edit + weekly availability) pages
+│   ├── schedule/                  # day/week calendar, appointment create/edit/cancel
+│   ├── map/                        # patient/therapist location map + travel-time calculator
+│   └── optimize/                    # optimization dashboard - run/status/recommendations/What-If
 ├── components/
 │   ├── ui/                     # shadcn/ui primitives (button, input, table, alert-dialog, progress, ...)
 │   ├── layout/                 # AppHeader (nav + logout)
-│   ├── patients/                # PatientForm, shared by the new and edit flows
-│   ├── imports/                 # ImportStepper, Upload/Mapping/Preview/Results step components
-│   ├── therapists/               # TherapistForm, AvailabilityEditor
-│   ├── scheduling/                # AppointmentForm (live conflict check via /validate), AppointmentCard
-│   ├── maps/                       # LocationCard (geocode status + action), MapView (Leaflet, dynamic-
-│   │                               # imported client-only), TravelTimeCalculator
-│   └── optimization/                # RecommendationCard (compare/accept/reject/modify), WhatIfPanel
-│                                    # (MOVE/ADD/REMOVE scenarios, evaluate + apply)
+│   ├── analytics/                # StatTile, HorizontalBarList/DaySeriesChart (dependency-free SVG/CSS
+│   │                              # charts - no charting library added), DateRangeControls,
+│   │                              # TherapistBreakdownTable, EfficiencyPanel, OptimizationImpactPanel
+│   ├── patients/                 # PatientForm, shared by the new and edit flows
+│   ├── imports/                   # ImportStepper, Upload/Mapping/Preview/Results step components
+│   ├── therapists/                 # TherapistForm, AvailabilityEditor
+│   ├── scheduling/                  # AppointmentForm (live conflict check via /validate), AppointmentCard
+│   ├── maps/                          # LocationCard (geocode status + action), MapView (Leaflet, dynamic-
+│   │                                  # imported client-only), TravelTimeCalculator
+│   └── optimization/                   # RecommendationCard (before/after driving time, compare/accept/
+│                                       # reject/modify), WhatIfPanel (MOVE/ADD/REMOVE, evaluate + apply)
 ├── lib/
-│   ├── api.ts                  # fetch wrapper (JSON + multipart), standardized ApiError, 401 -> refresh -> retry
+│   ├── api.ts                  # fetch wrapper (JSON + multipart), standardized ApiError, 401 -> refresh
+│   │                            # -> retry, and a hard redirect to /login if the refresh itself fails
+│   │                            # (Phase 10 fix - see "Known Notes")
 │   ├── auth.ts                  # localStorage token storage
 │   └── use-require-auth.ts      # client-side route guard
-└── types/                      # TS types mirroring backend/app/schemas/{patient,import_job,therapist,appointment,maps,optimization}.py
+└── types/                      # TS types mirroring backend/app/schemas/{patient,import_job,therapist,
+                                 # appointment,maps,optimization,analytics}.py and auth.py's UserPublic
 ```
 
 ---
@@ -277,11 +297,16 @@ without email. Swap that for a real email send once a provider is
 chosen — the extension point is marked in
 `app/services/auth_service.request_password_reset`.
 
-**Rate limiting.** Not implemented yet. `app/core/rate_limiting.py`
-defines no-op dependencies (`rate_limit_login`, `rate_limit_password_reset`,
-`rate_limit_register`) already wired into the relevant routes as clearly
-marked extension points for whichever backend (Redis counter, slowapi,
-...) gets chosen later.
+**Rate limiting** (Phase 9). Redis-backed fixed-window counters in
+`app/core/rate_limiting.py` - `rate_limit_login`/`rate_limit_password_reset`
+(keyed by IP+email) and `rate_limit_register` (keyed by IP) guard the auth
+routes; the generic `rate_limit(bucket, limit=, window_seconds=)` factory
+guards per-user "expensive operation" endpoints (Excel import upload,
+optimization-request creation, explicit geocode, travel-time-matrix).
+Fails **open**, not closed - a Redis outage degrades to "not rate
+limited" rather than locking every user out, matching `app/core/cache.py`'s
+existing philosophy. See `docs/14_Production_Deployment.md` for the full
+list of configurable limits.
 
 ---
 
@@ -724,6 +749,134 @@ pre-filled from a recommendation's "Modify" action.
 
 ---
 
+## Analytics & Efficiency Dashboard
+
+Backend: `GET /api/v1/analytics/{overview,therapists,efficiency,optimization-impact}`
+(`app/modules/analytics/router.py`, `app/services/analytics_service.py`).
+All four accept `period` (`today`/`this_week`/`last_week`/`this_month`/`custom`)
+plus `start_date`/`end_date` for `custom`; the latter three also accept
+`?therapist_id=` to drill into one therapist. Frontend: `/dashboard`.
+
+- **Every number is computed server-side** - the frontend only ever
+  renders what these endpoints return, never recomputes a metric itself.
+- **Driving time/distance isn't stored anywhere** - it's derived the
+  same way the optimizer/What-If already do it: a therapist's actual
+  chronological route for a day, built from geocoded appointment
+  locations and run through the same `travel_time_service`/
+  `optimization_engine.fixed_order_legs` machinery (a Phase 10-era
+  primitive: total driving *including* home-adjacent legs is a different
+  number from average driving *between* appointments, and both come from
+  one pass over the same computed legs, never two separate calculations).
+- **Only accepted recommendations count as savings.** Filtering on
+  `accepted_at IS NOT NULL AND time_saved_minutes IS NOT NULL`
+  structurally excludes rejected recommendations and What-If (which
+  never persists a row at all) for free, and separates
+  `NEW_PATIENT_PLACEMENT` (a marginal cost, not a saving - no
+  `time_saved_minutes`) from genuine day/week-reorder savings.
+- **RBAC mirrors the rest of the app**: `CLINIC_ADMIN`/`OFFICE_SCHEDULER`
+  see clinic-wide numbers; `THERAPIST` is always restricted to their own
+  data server-side, regardless of what `?therapist_id=` says.
+- **No new charting dependency.** `components/analytics/bar-chart.tsx`'s
+  horizontal-bar and day-series charts are plain CSS/SVG, matching the
+  project's existing "don't add a dependency for something this simple"
+  stance (`lib/api.ts`'s own docstring sets this precedent).
+
+---
+
+## Production Hardening & Security
+
+A security/reliability pass (Phase 9) - see `docs/14_Production_Deployment.md`
+for the full write-up (env vars, deployment requirements, security
+assumptions, backup/restore, troubleshooting). Highlights:
+
+- **Rate limiting** - see the Authentication section above.
+- **Audit logging** (`app/services/audit_service.py`, the pre-existing
+  `audit_logs` table): login/logout/failed-login (Phase 1B) plus
+  patient create/update/delete, therapist create/deactivate/reactivate,
+  appointment create/update/cancel, import confirmation, and
+  optimization-recommendation acceptance. Every record carries
+  `clinic_id` (tenant isolation) and the acting `user_id`; values are
+  deliberately minimal (changed field *names*, never PII values).
+- **Upload memory safety** - the import endpoint reads in bounded 1 MB
+  chunks and aborts as soon as `IMPORT_MAX_FILE_SIZE_BYTES` is exceeded,
+  instead of buffering an arbitrarily large upload into memory first.
+  A generic `MaxBodySizeMiddleware` caps every other JSON endpoint at
+  `MAX_REQUEST_BODY_BYTES` (default 1 MB).
+- **Pooled HTTP clients** - `routing.py` and `geocoding.py` each reuse
+  one `httpx.Client` per process instead of opening a fresh connection
+  per call (previously a documented known limitation).
+- **Celery reliability** - `task_soft_time_limit`/`task_time_limit`
+  backstop a hung job; `run_optimization` refuses to recompute a request
+  that isn't `PENDING`, so a redelivered/duplicate task message can
+  never insert duplicate recommendation rows.
+- **Production config validation** - `Settings` refuses to start with
+  `ENVIRONMENT=production` if `JWT_SECRET_KEY`/`DATABASE_URL` hold dev
+  defaults, `CORS_ORIGINS` is empty/`localhost`, or
+  `CELERY_TASK_ALWAYS_EAGER` is true.
+- **Production Docker** - `backend/Dockerfile.prod` (non-root `appuser`,
+  healthchecked, no `--reload`) and `frontend/Dockerfile.prod`
+  (multi-stage `next build`+`next start`, non-root `node` user,
+  healthchecked) are separate from the dev Dockerfiles, which keep
+  running as root with a bind-mounted, hot-reloading dev server on
+  purpose - see each Dockerfile's own comments. `docker-compose.prod.yml`
+  is a standalone (not an overlay) production compose file - see its
+  header comment for why.
+
+---
+
+## Demo Data
+
+`scripts/seed_demo_data.py` creates one deterministic, fictional home-
+health clinic through the real HTTP API (not by writing to the database
+directly, so every piece of seeded data goes through the same
+validation/geocoding/audit logic a real user's browser would trigger):
+3 therapists (different availability shapes, including a part-time one),
+8 patients (a mix of near/far addresses and one with a real availability
+constraint), a week of appointments (including one day deliberately laid
+out in a non-optimal order so the optimizer has something to find), a
+demonstrated scheduling-conflict rejection, and one real optimization
+run + accepted recommendation so the dashboard/analytics have genuine
+data to show immediately. Patient/therapist coordinates are supplied
+directly (never geocoded live), so the script never depends on Nominatim
+being reachable.
+
+```bash
+# With the dev stack already running (docker compose up, migrations applied):
+python scripts/seed_demo_data.py
+```
+
+Prints the demo login (`dana.admin@routecare-demo.example.com` / a fixed
+password) on success. Appointments are always seeded into the **current**
+calendar week (not "next" week) specifically so the dashboard's default
+`this_week` view shows real data immediately - see the script's own
+`_this_monday()` docstring, a Phase 10 fix (a first version used "next
+Monday," which left a fresh demo clinic's dashboard showing all zeros
+until the following week).
+
+---
+
+## Testing
+
+```bash
+cd backend
+pytest                              # full suite
+pytest tests/test_e2e_workflow.py   # the Phase 10 end-to-end journey alone
+```
+
+`tests/test_e2e_workflow.py` walks one continuous scenario through the
+real HTTP API - authentication, clinic isolation, therapist creation,
+availability, patient creation, Excel import + duplicate detection,
+appointment creation + conflict detection, travel-time calculation,
+optimization + accept/reject, What-If evaluate/apply, analytics, and
+audit logging - specifically to prove the pieces *compose* (e.g. a
+patient who arrives via Excel import can be scheduled/optimized exactly
+like a manually-created one), which the per-feature unit tests
+elsewhere in the suite don't individually exercise. Routing/geocoding
+are mocked throughout the whole suite - no test depends on live
+OSRM/Nominatim.
+
+---
+
 ## Environment Variables
 
 See `.env.example` (root), `backend/.env.example`, and
@@ -746,7 +899,17 @@ See `.env.example` (root), `backend/.env.example`, and
 | `OPTIMIZATION_GAP_WEIGHT` / `OPTIMIZATION_CHANGE_PENALTY_WEIGHT` | Soft-constraint weights, relative to 1.0 on drive-minutes |
 | `OPTIMIZATION_DEFAULT_SEARCH_DAYS` | Default search window for `NEW_PATIENT_PLACEMENT` (default 14 days) |
 | `OPTIMIZATION_MAX_APPOINTMENTS_PER_DAY` | Solver problem-size cap per day (default 20) |
-| `NEXT_PUBLIC_API_BASE_URL` | Where the frontend expects the API |
+| `RATE_LIMIT_LOGIN_MAX_ATTEMPTS` / `RATE_LIMIT_LOGIN_WINDOW_SECONDS` | Login attempts per (IP, email) - default 5 / 15 min |
+| `RATE_LIMIT_REGISTER_MAX_ATTEMPTS` / `..._WINDOW_SECONDS` | Registrations per IP - default 5 / 1 hour |
+| `RATE_LIMIT_PASSWORD_RESET_MAX_ATTEMPTS` / `..._WINDOW_SECONDS` | Reset requests per (IP, email) - default 3 / 1 hour |
+| `RATE_LIMIT_IMPORT_UPLOAD_MAX` / `RATE_LIMIT_OPTIMIZATION_MAX` / `RATE_LIMIT_GEOCODE_MAX` / `RATE_LIMIT_TRAVEL_MATRIX_MAX` (+ each `..._WINDOW_SECONDS`) | Per-user limits on expensive operations - see `app/core/config.py` for defaults |
+| `MAX_REQUEST_BODY_BYTES` | Generic JSON request-body cap enforced by `MaxBodySizeMiddleware` (default 1 MB) |
+| `CELERY_TASK_SOFT_TIME_LIMIT_SECONDS` / `CELERY_TASK_TIME_LIMIT_SECONDS` | Backstop timeouts for optimization/import background jobs (default 300s/360s) |
+| `NEXT_PUBLIC_API_BASE_URL` | Where the frontend expects the API - **not a secret**, it's shipped to every browser |
+
+Production-only variables (`.env.production.example`) and the full
+security/deployment picture live in
+[`docs/14_Production_Deployment.md`](docs/14_Production_Deployment.md).
 
 ---
 
@@ -766,18 +929,40 @@ See `.env.example` (root), `backend/.env.example`, and
   probes a `bcrypt.__about__` attribute that no longer exists, so every
   hash/verify call raises. `app/core/security.py` calls the `bcrypt`
   library directly instead.
-- **Analytics module is still an empty placeholder** — auth, patients,
-  imports, therapist management/scheduling (Phase 4), maps/travel-time
-  (Phase 5), schedule optimization (Phase 6), and the optimization
-  workflow/What-If/weekly mode (Phase 7) are implemented so far.
-- **`app.services.routing`'s OSRM calls each open a fresh connection**
-  (`httpx.get(...)` per call, no shared `httpx.Client`) rather than
-  reusing a pooled connection - fine at this app's current scale, but
-  under real traffic (or when Redis is briefly cold and several
-  uncached lookups fire back-to-back, e.g. What-If's before/after
-  comparison) the repeated connection/TLS-handshake overhead is real
-  and avoidable. Worth switching to a shared, connection-pooled client
-  if routing latency becomes a concern.
+- **Docker dev hot-reload requires polling** (Phase 10 fix). On this
+  project's Windows/Docker Desktop combination, neither `next dev`'s
+  webpack watcher nor `uvicorn --reload`'s watchfiles watcher ever
+  detected a host-side file edit through the bind mount by default -
+  confirmed by editing a file and watching the container logs never show
+  a recompile/reload, even though the container's view of the file
+  content was already correctly up to date (a watch-mechanism problem,
+  not a file-sync problem). `docker-compose.yml` now sets
+  `WATCHFILES_FORCE_POLLING=true` (backend) and `WATCHPACK_POLLING=true`
+  (frontend) to force polling-based watching, which reliably works
+  across host OSes/file-sharing backends at the cost of a several-second
+  detection delay instead of near-instant native events. If hot-reload
+  ever seems to have stopped working again after a `docker compose up`,
+  confirm both env vars actually reached the container
+  (`docker exec routecare-backend env | grep WATCHFILES`) before
+  assuming it's a code bug.
+- **A dead session (expired/revoked refresh token) now redirects to
+  `/login`** (Phase 10 fix) instead of leaving whatever page was open
+  showing a generic "could not load" error with no way back short of a
+  manual reload - see `lib/api.ts`'s `apiFetch`.
+- **`app.services.routing`/`geocoding` now reuse a pooled `httpx.Client`**
+  (Phase 9) instead of opening a fresh connection per call - previously
+  a known limitation, now fixed; see the Production Hardening section.
+- **Day-schedule optimization's patient-availability lookup is now
+  batched** (Phase 10 perf fix) - `_compute_day_schedule_recommendation`
+  used to query `PatientAvailability` once per appointment in a loop (a
+  bounded but real N+1 on the optimizer's main hot path, up to
+  `OPTIMIZATION_MAX_APPOINTMENTS_PER_DAY` extra queries per run); it now
+  fetches every involved patient's availability for the day in one
+  query. Behavior is unchanged, only the query count.
+- **The optimization recommendation card now shows "before" driving time
+  explicitly** (Phase 10 UX fix), not just "after" and "time saved" -
+  a user previously had to compute `after + saved` themselves to see
+  what the schedule cost before the recommendation.
 - **Weekly optimization is one therapist at a time.** There's no
   bulk/multi-therapist weekly job (Phase 7's task explicitly listed this
   as an existing limitation to leave alone, not fix) - a clinic-wide
@@ -834,6 +1019,9 @@ All product/architecture docs referenced during development live in
 - `11_Claude_Development_Prompts.md`
 - `12_MVP_Launch_Strategy.md`
 - `13_Coding_Standards.md`
+- `14_Production_Deployment.md` — env vars, deployment requirements,
+  security assumptions actually enforced (not just planned), migrations,
+  backup/restore, health checks, operational troubleshooting (Phase 9/10)
 
 ## Core Principle
 
