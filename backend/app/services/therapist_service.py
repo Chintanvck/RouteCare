@@ -31,7 +31,7 @@ from app.models.therapist import Therapist
 from app.models.user import User
 from app.schemas.common import PaginationParams
 from app.schemas.therapist import TherapistCreate, TherapistUpdate
-from app.services import geocoding
+from app.services import audit_service, geocoding
 
 SortBy = Literal["name", "created_at"]
 SortOrder = Literal["asc", "desc"]
@@ -52,7 +52,9 @@ def _geocode_safely(*, clinic_id: uuid.UUID, address: str) -> geocoding.GeocodeR
         return None
 
 
-def create_therapist(db: Session, *, clinic_id: uuid.UUID, data: TherapistCreate) -> Therapist:
+def create_therapist(
+    db: Session, *, clinic_id: uuid.UUID, data: TherapistCreate, actor_user_id: uuid.UUID | None = None
+) -> Therapist:
     existing = db.query(User).filter(User.email == data.email).first()
     if existing is not None:
         raise ConflictError("An account with that email already exists.", code="EMAIL_ALREADY_EXISTS")
@@ -111,6 +113,10 @@ def create_therapist(db: Session, *, clinic_id: uuid.UUID, data: TherapistCreate
         max_drive_time_minutes=data.max_drive_time_minutes,
     )
     db.add(therapist)
+    db.flush()
+    audit_service.record(
+        db, clinic_id=clinic_id, user_id=actor_user_id, action="USER_CREATED", entity_type="USER", entity_id=user.id
+    )
     db.commit()
     db.refresh(therapist)
     return therapist
@@ -166,10 +172,18 @@ def list_therapists(
     return paginate(query, pagination)
 
 
-def update_therapist(db: Session, *, clinic_id: uuid.UUID, therapist_id: uuid.UUID, data: TherapistUpdate) -> Therapist:
+def update_therapist(
+    db: Session,
+    *,
+    clinic_id: uuid.UUID,
+    therapist_id: uuid.UUID,
+    data: TherapistUpdate,
+    actor_user_id: uuid.UUID | None = None,
+) -> Therapist:
     therapist = get_therapist(db, clinic_id=clinic_id, therapist_id=therapist_id)
     updates = data.model_dump(exclude_unset=True)
 
+    was_active = therapist.user.is_active
     user_fields = {"first_name", "last_name", "email", "is_active"}
     for field in user_fields & updates.keys():
         if field == "email" and updates[field] != therapist.user.email:
@@ -177,6 +191,16 @@ def update_therapist(db: Session, *, clinic_id: uuid.UUID, therapist_id: uuid.UU
             if existing is not None:
                 raise ConflictError("An account with that email already exists.", code="EMAIL_ALREADY_EXISTS")
         setattr(therapist.user, field, updates[field])
+
+    if "is_active" in updates and updates["is_active"] != was_active:
+        audit_service.record(
+            db,
+            clinic_id=clinic_id,
+            user_id=actor_user_id,
+            action="USER_REACTIVATED" if updates["is_active"] else "USER_DEACTIVATED",
+            entity_type="USER",
+            entity_id=therapist.user_id,
+        )
 
     explicit_verified = updates.pop("location_verified", None)
     manual_coords_supplied = (

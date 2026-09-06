@@ -43,8 +43,29 @@ def test_production_accepts_properly_configured_secrets() -> None:
         ENVIRONMENT="production",
         JWT_SECRET_KEY="a" * 40,
         DATABASE_URL="postgresql+psycopg2://user:realpassword@prod-host:5432/routecare_ai",
+        CORS_ORIGINS="https://app.routecare.ai",
     )
     assert settings.ENVIRONMENT == "production"
+
+
+def test_production_rejects_localhost_cors_origin() -> None:
+    with pytest.raises(ValidationError, match="CORS_ORIGINS"):
+        Settings(
+            ENVIRONMENT="production",
+            JWT_SECRET_KEY="a" * 40,
+            DATABASE_URL="postgresql+psycopg2://user:realpassword@prod-host:5432/routecare_ai",
+            CORS_ORIGINS="http://localhost:3000",
+        )
+
+
+def test_production_rejects_empty_cors_origins() -> None:
+    with pytest.raises(ValidationError, match="CORS_ORIGINS"):
+        Settings(
+            ENVIRONMENT="production",
+            JWT_SECRET_KEY="a" * 40,
+            DATABASE_URL="postgresql+psycopg2://user:realpassword@prod-host:5432/routecare_ai",
+            CORS_ORIGINS="",
+        )
 
 
 def test_expiry_settings_must_be_positive() -> None:

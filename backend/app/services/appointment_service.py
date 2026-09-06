@@ -28,7 +28,7 @@ from app.models.therapist_availability import TherapistAvailability
 from app.models.user import User
 from app.schemas.appointment import AppointmentCreate, AppointmentUpdate
 from app.schemas.common import PaginationParams
-from app.services import patient_service, therapist_service
+from app.services import audit_service, patient_service, therapist_service
 from app.services.scheduling_validation import (
     TimeRange,
     check_overlap,
@@ -185,6 +185,16 @@ def create_appointment(
         created_by=created_by,
     )
     db.add(appointment)
+    db.flush()
+    audit_service.record(
+        db,
+        clinic_id=clinic_id,
+        user_id=created_by,
+        action="APPOINTMENT_CREATED",
+        entity_type="APPOINTMENT",
+        entity_id=appointment.id,
+        new_value={"scheduled_date": data.scheduled_date.isoformat(), "start_time": data.start_time.isoformat()},
+    )
     db.commit()
     db.refresh(appointment)
     return appointment
@@ -255,6 +265,12 @@ def update_appointment(
         db, clinic_id=clinic_id, appointment_id=appointment_id, restrict_to_therapist_id=restrict_to_therapist_id
     )
     updates = data.model_dump(exclude_unset=True)
+    if not updates:
+        return appointment
+
+    old_scheduled_date = appointment.scheduled_date
+    old_start_time = appointment.start_time
+    old_status = appointment.status
 
     if restrict_to_therapist_id is not None:
         disallowed = set(updates.keys()) - _THERAPIST_UPDATABLE_FIELDS
@@ -311,16 +327,48 @@ def update_appointment(
     if "status" in updates:
         appointment.status = updates["status"]
 
+    old_value: dict[str, str] = {}
+    new_value: dict[str, str] = {}
+    if old_scheduled_date != appointment.scheduled_date or old_start_time != appointment.start_time:
+        old_value["scheduled_at"] = f"{old_scheduled_date.isoformat()} {old_start_time.isoformat()}"
+        new_value["scheduled_at"] = f"{appointment.scheduled_date.isoformat()} {appointment.start_time.isoformat()}"
+    if old_status != appointment.status:
+        old_value["status"] = old_status.value
+        new_value["status"] = appointment.status.value
+    audit_service.record(
+        db,
+        clinic_id=clinic_id,
+        user_id=current_user.id,
+        action="APPOINTMENT_UPDATED",
+        entity_type="APPOINTMENT",
+        entity_id=appointment.id,
+        old_value=old_value or None,
+        new_value=new_value or {"changed_fields": sorted(updates.keys())},
+    )
+
     db.commit()
     db.refresh(appointment)
     return appointment
 
 
 def cancel_appointment(
-    db: Session, *, clinic_id: uuid.UUID, appointment_id: uuid.UUID, restrict_to_therapist_id: uuid.UUID | None = None
+    db: Session,
+    *,
+    clinic_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    restrict_to_therapist_id: uuid.UUID | None = None,
+    actor_user_id: uuid.UUID | None = None,
 ) -> None:
     appointment = get_appointment(
         db, clinic_id=clinic_id, appointment_id=appointment_id, restrict_to_therapist_id=restrict_to_therapist_id
     )
     appointment.status = AppointmentStatus.CANCELLED
+    audit_service.record(
+        db,
+        clinic_id=clinic_id,
+        user_id=actor_user_id,
+        action="APPOINTMENT_CANCELLED",
+        entity_type="APPOINTMENT",
+        entity_id=appointment.id,
+    )
     db.commit()

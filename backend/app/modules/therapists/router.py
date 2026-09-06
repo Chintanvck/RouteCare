@@ -13,10 +13,13 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_clinic_id
+from app.core.config import settings
+from app.core.dependencies import get_current_clinic_id, get_current_user
 from app.core.permissions import UserRole, require_role
+from app.core.rate_limiting import rate_limit
 from app.database.session import get_db
 from app.models.patient import GeocodingStatus
+from app.models.user import User
 from app.schemas.availability import SetTherapistAvailabilityRequest, TherapistAvailabilityPublic
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.maps import TherapistGeocodeResponse
@@ -56,9 +59,10 @@ def list_therapists(
 def create_therapist(
     payload: TherapistCreate,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TherapistPublic:
-    therapist = therapist_service.create_therapist(db, clinic_id=clinic_id, data=payload)
+    therapist = therapist_service.create_therapist(db, clinic_id=clinic_id, data=payload, actor_user_id=current_user.id)
     return TherapistPublic.model_validate(therapist)
 
 
@@ -77,16 +81,26 @@ def update_therapist(
     therapist_id: uuid.UUID,
     payload: TherapistUpdate,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TherapistPublic:
-    therapist = therapist_service.update_therapist(db, clinic_id=clinic_id, therapist_id=therapist_id, data=payload)
+    therapist = therapist_service.update_therapist(
+        db, clinic_id=clinic_id, therapist_id=therapist_id, data=payload, actor_user_id=current_user.id
+    )
     return TherapistPublic.model_validate(therapist)
 
 
 @router.post(
     "/{therapist_id}/geocode",
     response_model=TherapistGeocodeResponse,
-    dependencies=[Depends(require_role(*_WRITE_ROLES))],
+    dependencies=[
+        Depends(require_role(*_WRITE_ROLES)),
+        Depends(
+            rate_limit(
+                "geocode", limit=settings.RATE_LIMIT_GEOCODE_MAX, window_seconds=settings.RATE_LIMIT_GEOCODE_WINDOW_SECONDS
+            )
+        ),
+    ],
 )
 def geocode_therapist(
     therapist_id: uuid.UUID,

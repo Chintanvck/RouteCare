@@ -11,8 +11,11 @@ import uuid
 from fastapi import APIRouter, Depends, File, UploadFile
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.dependencies import get_current_clinic_id, get_current_user
+from app.core.exceptions import ValidationError
 from app.core.permissions import UserRole, require_role
+from app.core.rate_limiting import rate_limit
 from app.database.session import get_db
 from app.models.user import User
 from app.schemas.common import PaginatedResponse, PaginationParams
@@ -31,12 +34,38 @@ router = APIRouter()
 
 _ALLOWED_ROLES = (UserRole.CLINIC_ADMIN, UserRole.OFFICE_SCHEDULER)
 
+_UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1 MB
+
+
+async def _read_bounded(file: UploadFile, *, max_bytes: int) -> bytes:
+    """Reads `file` in chunks and aborts as soon as `max_bytes` is exceeded, instead of buffering
+    an arbitrarily large upload into memory before app.services.file_validation ever gets a chance
+    to reject it on size - a client can otherwise stream gigabytes at this endpoint and exhaust
+    server memory well before the existing post-hoc size check runs."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            max_mb = max_bytes / (1024 * 1024)
+            raise ValidationError(
+                f"File is too large. The maximum upload size is {max_mb:.0f} MB.", code="IMPORT_FILE_TOO_LARGE"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @router.post(
     "/patients",
     response_model=ImportUploadResponse,
     status_code=201,
-    dependencies=[Depends(require_role(*_ALLOWED_ROLES))],
+    dependencies=[
+        Depends(require_role(*_ALLOWED_ROLES)),
+        Depends(rate_limit("import_upload", limit=settings.RATE_LIMIT_IMPORT_UPLOAD_MAX, window_seconds=settings.RATE_LIMIT_IMPORT_UPLOAD_WINDOW_SECONDS)),
+    ],
 )
 async def upload_patients_import(
     file: UploadFile = File(...),
@@ -44,7 +73,9 @@ async def upload_patients_import(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ImportUploadResponse:
-    content = await file.read()
+    # +1 byte of slack so a file exactly at the limit isn't falsely rejected by the chunked
+    # early-abort check, while file_validation.validate_upload still applies the exact bound.
+    content = await _read_bounded(file, max_bytes=settings.IMPORT_MAX_FILE_SIZE_BYTES + 1)
     job, suggested_mapping = import_service.upload_import(
         db,
         clinic_id=clinic_id,
@@ -139,8 +170,9 @@ def confirm_import(
     import_id: uuid.UUID,
     payload: ConfirmImportRequest,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ImportJobPublic:
-    job = import_service.confirm_import(db, clinic_id=clinic_id, import_id=import_id)
+    job = import_service.confirm_import(db, clinic_id=clinic_id, import_id=import_id, actor_user_id=current_user.id)
     execute_import_task.delay(str(job.id), payload.include_duplicates)
     return ImportJobPublic.model_validate(job)

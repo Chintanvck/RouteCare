@@ -1,0 +1,33 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps needed for psycopg2 and OR-Tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Non-root: safe here (unlike the dev Dockerfile) because there's no bind-mount - COPY above
+# already baked the source into the image with a known owner, so a container-local UID can freely
+# own it. IMPORT_STORAGE_DIR (var/imports, see app/core/config.py) is created and owned up front so
+# the app never needs root to write its own upload storage at runtime.
+RUN useradd --create-home --uid 1000 appuser \
+    && mkdir -p /app/var/imports \
+    && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request as u; u.urlopen('http://localhost:8000/health/live', timeout=3)" || exit 1
+
+# No --reload (dev-only, watches the filesystem and re-imports on every change - wasted overhead
+# and a larger attack surface in production); --workers gives a small amount of process-level
+# concurrency without needing a separate process manager for this deployment's scale.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

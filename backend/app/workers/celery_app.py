@@ -33,6 +33,9 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_always_eager=settings.CELERY_TASK_ALWAYS_EAGER,
+    # Phase 9 hardening - see Settings.CELERY_TASK_SOFT_TIME_LIMIT_SECONDS's docstring.
+    task_soft_time_limit=settings.CELERY_TASK_SOFT_TIME_LIMIT_SECONDS,
+    task_time_limit=settings.CELERY_TASK_TIME_LIMIT_SECONDS,
 )
 
 from app.workers import import_tasks, optimization_tasks, tasks  # noqa: E402,F401

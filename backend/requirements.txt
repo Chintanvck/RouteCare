@@ -35,6 +35,11 @@ ortools==9.10.4067
 # HTTP client (used for geocoding/routing services)
 httpx==0.27.2
 
+# IANA timezone data for zoneinfo (used starting Phase 8) - the stdlib zoneinfo module relies on
+# the system tz database, which isn't guaranteed present (e.g. some Windows/minimal-container
+# environments); this package provides it explicitly rather than assuming it's already there.
+tzdata==2024.1
+
 # Testing
 pytest==8.3.3
 pytest-asyncio==0.24.0

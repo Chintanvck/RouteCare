@@ -1,14 +1,24 @@
 """
 RouteCare AI - Geocoding service tests.
 
-These exercise app.services.geocoding directly (no HTTP client, no DB)
-by monkeypatching httpx.get - never touches the real Nominatim service.
+These exercise app.services.geocoding directly (no real HTTP client, no
+DB) by monkeypatching its pooled httpx.Client (see
+app.services.geocoding._get_http_client) - never touches the real
+Nominatim service.
 """
 
 import httpx
 import pytest
 
 from app.services import geocoding
+
+
+class _FakeClient:
+    """Stands in for the module's pooled httpx.Client - `get_fn` is exactly the same fake
+    request handler these tests used to hand straight to `httpx.get`."""
+
+    def __init__(self, get_fn):
+        self.get = get_fn
 
 
 class _FakeResponse:
@@ -28,11 +38,11 @@ class _FakeResponse:
 
 
 def test_nominatim_provider_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None):
         assert "User-Agent" in headers
         return _FakeResponse([{"lat": "40.7128", "lon": "-74.0060", "display_name": "New York, NY, USA"}])
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(geocoding, "_get_http_client", lambda: _FakeClient(fake_get))
 
     result = geocoding.NominatimGeocodingProvider().geocode(
         address_line_1="123 Main St", city="Hoboken", state="NJ", zip_code="07030"
@@ -45,7 +55,7 @@ def test_nominatim_provider_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_nominatim_provider_no_results_is_invalid_address(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _FakeResponse([]))
+    monkeypatch.setattr(geocoding, "_get_http_client", lambda: _FakeClient(lambda *a, **kw: _FakeResponse([])))
 
     result = geocoding.NominatimGeocodingProvider().geocode(
         address_line_1="Nonexistent Street 99999", city="Nowhere", state="ZZ", zip_code="00000"
@@ -56,7 +66,9 @@ def test_nominatim_provider_no_results_is_invalid_address(monkeypatch: pytest.Mo
 
 def test_nominatim_provider_incomplete_address_never_calls_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: calls.append(1) or _FakeResponse([]))
+    monkeypatch.setattr(
+        geocoding, "_get_http_client", lambda: _FakeClient(lambda *a, **kw: calls.append(1) or _FakeResponse([]))
+    )
 
     result = geocoding.NominatimGeocodingProvider().geocode(address_line_1="", city="", state="", zip_code="")
 
@@ -68,7 +80,7 @@ def test_nominatim_provider_timeout_returns_none(monkeypatch: pytest.MonkeyPatch
     def fake_get(*args, **kwargs):
         raise httpx.TimeoutException("timed out")
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(geocoding, "_get_http_client", lambda: _FakeClient(fake_get))
 
     result = geocoding.NominatimGeocodingProvider().geocode(
         address_line_1="123 Main St", city="Hoboken", state="NJ", zip_code="07030"
@@ -78,7 +90,7 @@ def test_nominatim_provider_timeout_returns_none(monkeypatch: pytest.MonkeyPatch
 
 
 def test_nominatim_provider_http_error_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _FakeResponse({}, status_code=503))
+    monkeypatch.setattr(geocoding, "_get_http_client", lambda: _FakeClient(lambda *a, **kw: _FakeResponse({}, status_code=503)))
 
     result = geocoding.NominatimGeocodingProvider().geocode(
         address_line_1="123 Main St", city="Hoboken", state="NJ", zip_code="07030"
@@ -91,7 +103,7 @@ def test_nominatim_provider_malformed_json_returns_none(monkeypatch: pytest.Monk
     def fake_get(*args, **kwargs):
         raise httpx.HTTPError("bad body")
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(geocoding, "_get_http_client", lambda: _FakeClient(fake_get))
 
     result = geocoding.NominatimGeocodingProvider().geocode(
         address_line_1="123 Main St", city="Hoboken", state="NJ", zip_code="07030"
@@ -101,7 +113,9 @@ def test_nominatim_provider_malformed_json_returns_none(monkeypatch: pytest.Monk
 
 
 def test_nominatim_provider_missing_fields_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _FakeResponse([{"unexpected": "shape"}]))
+    monkeypatch.setattr(
+        geocoding, "_get_http_client", lambda: _FakeClient(lambda *a, **kw: _FakeResponse([{"unexpected": "shape"}]))
+    )
 
     result = geocoding.NominatimGeocodingProvider().geocode(
         address_line_1="123 Main St", city="Hoboken", state="NJ", zip_code="07030"

@@ -37,6 +37,7 @@ from app.services.duplicate_detection import (
     WithinFileDuplicateTracker,
     match_against_existing_patients,
 )
+from app.services import audit_service
 from app.services.excel_parser import parse_workbook
 from app.services.file_validation import scan_for_malware, validate_upload
 
@@ -349,7 +350,9 @@ def run_row_validation(db: Session, import_id: uuid.UUID) -> None:
 # --- Confirm + execute ---
 
 
-def confirm_import(db: Session, *, clinic_id: uuid.UUID, import_id: uuid.UUID) -> ImportJob:
+def confirm_import(
+    db: Session, *, clinic_id: uuid.UUID, import_id: uuid.UUID, actor_user_id: uuid.UUID | None = None
+) -> ImportJob:
     job = get_import(db, clinic_id=clinic_id, import_id=import_id)
 
     # total_records is set at upload time too (from the initial parse), so it can't distinguish
@@ -362,6 +365,15 @@ def confirm_import(db: Session, *, clinic_id: uuid.UUID, import_id: uuid.UUID) -
 
     job.status = ImportStatus.PROCESSING
     job.processed_records = 0
+    audit_service.record(
+        db,
+        clinic_id=clinic_id,
+        user_id=actor_user_id,
+        action="IMPORT_CONFIRMED",
+        entity_type="IMPORT_JOB",
+        entity_id=job.id,
+        new_value={"valid_records": job.valid_records},
+    )
     db.commit()
     db.refresh(job)
     return job

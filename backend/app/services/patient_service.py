@@ -39,7 +39,7 @@ from app.database.pagination import paginate
 from app.models.patient import GeocodingStatus, Patient
 from app.schemas.common import PaginationParams
 from app.schemas.patient import PatientCreate, PatientUpdate
-from app.services import geocoding
+from app.services import audit_service, geocoding
 
 SortBy = Literal["name", "created_at", "zip_code"]
 SortOrder = Literal["asc", "desc"]
@@ -64,7 +64,14 @@ def _geocode_safely(
         return None
 
 
-def create_patient(db: Session, *, clinic_id: uuid.UUID, data: PatientCreate, source_system: str = "manual") -> Patient:
+def create_patient(
+    db: Session,
+    *,
+    clinic_id: uuid.UUID,
+    data: PatientCreate,
+    source_system: str = "manual",
+    actor_user_id: uuid.UUID | None = None,
+) -> Patient:
     now = datetime.now(timezone.utc)
 
     if data.latitude is not None and data.longitude is not None:
@@ -114,6 +121,10 @@ def create_patient(db: Session, *, clinic_id: uuid.UUID, data: PatientCreate, so
         source_system=source_system,
     )
     db.add(patient)
+    db.flush()
+    audit_service.record(
+        db, clinic_id=clinic_id, user_id=actor_user_id, action="PATIENT_CREATED", entity_type="PATIENT", entity_id=patient.id
+    )
     db.commit()
     db.refresh(patient)
     return patient
@@ -165,7 +176,14 @@ def list_patients(
     return paginate(query, pagination)
 
 
-def update_patient(db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID, data: PatientUpdate) -> Patient:
+def update_patient(
+    db: Session,
+    *,
+    clinic_id: uuid.UUID,
+    patient_id: uuid.UUID,
+    data: PatientUpdate,
+    actor_user_id: uuid.UUID | None = None,
+) -> Patient:
     patient = get_patient(db, clinic_id=clinic_id, patient_id=patient_id)
 
     updates = data.model_dump(exclude_unset=True)
@@ -210,6 +228,18 @@ def update_patient(db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID, 
             patient.geocoding_status = GeocodingStatus.FAILED
             patient.geocoded_at = None
 
+    if updates:
+        # Field *names* only, never the values themselves - per this module's data-minimization
+        # note, an audit trail for PII fields shouldn't become a second place that PII lives.
+        audit_service.record(
+            db,
+            clinic_id=clinic_id,
+            user_id=actor_user_id,
+            action="PATIENT_UPDATED",
+            entity_type="PATIENT",
+            entity_id=patient.id,
+            new_value={"changed_fields": sorted(updates.keys())},
+        )
     db.commit()
     db.refresh(patient)
     return patient
@@ -249,7 +279,12 @@ def geocode_patient(db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID)
     return patient, result.normalized_address
 
 
-def soft_delete_patient(db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID) -> None:
+def soft_delete_patient(
+    db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID, actor_user_id: uuid.UUID | None = None
+) -> None:
     patient = get_patient(db, clinic_id=clinic_id, patient_id=patient_id)
     patient.deleted_at = datetime.now(timezone.utc)
+    audit_service.record(
+        db, clinic_id=clinic_id, user_id=actor_user_id, action="PATIENT_DELETED", entity_type="PATIENT", entity_id=patient.id
+    )
     db.commit()

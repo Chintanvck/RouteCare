@@ -1,14 +1,23 @@
 """
 RouteCare AI - Routing service tests.
 
-Exercise app.services.routing directly by monkeypatching httpx.get -
-never touches the real OSRM service.
+Exercise app.services.routing directly by monkeypatching its pooled
+httpx.Client (see app.services.routing._get_http_client) - never
+touches the real OSRM service.
 """
 
 import httpx
 import pytest
 
 from app.services import routing
+
+
+class _FakeClient:
+    """Stands in for the module's pooled httpx.Client - `get_fn` is exactly the same fake
+    request handler these tests used to hand straight to `httpx.get`."""
+
+    def __init__(self, get_fn):
+        self.get = get_fn
 
 
 class _FakeResponse:
@@ -28,11 +37,8 @@ class _FakeResponse:
 
 
 def test_osrm_route_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        httpx,
-        "get",
-        lambda *a, **kw: _FakeResponse({"code": "Ok", "routes": [{"distance": 8047.0, "duration": 900.0}]}),
-    )
+    fake_get = lambda *a, **kw: _FakeResponse({"code": "Ok", "routes": [{"distance": 8047.0, "duration": 900.0}]})  # noqa: E731
+    monkeypatch.setattr(routing, "_get_http_client", lambda: _FakeClient(fake_get))
 
     result = routing.OSRMRoutingProvider().route(origin_lat=40.7, origin_lng=-74.0, dest_lat=40.8, dest_lng=-74.1)
 
@@ -42,7 +48,7 @@ def test_osrm_route_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_osrm_route_no_route_found(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _FakeResponse({"code": "NoRoute", "routes": []}))
+    monkeypatch.setattr(routing, "_get_http_client", lambda: _FakeClient(lambda *a, **kw: _FakeResponse({"code": "NoRoute", "routes": []})))
 
     result = routing.OSRMRoutingProvider().route(origin_lat=0.0, origin_lng=0.0, dest_lat=89.9, dest_lng=179.9)
 
@@ -53,7 +59,7 @@ def test_osrm_route_timeout_returns_none(monkeypatch: pytest.MonkeyPatch) -> Non
     def fake_get(*args, **kwargs):
         raise httpx.TimeoutException("timed out")
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(routing, "_get_http_client", lambda: _FakeClient(fake_get))
 
     result = routing.OSRMRoutingProvider().route(origin_lat=40.7, origin_lng=-74.0, dest_lat=40.8, dest_lng=-74.1)
 
@@ -61,7 +67,7 @@ def test_osrm_route_timeout_returns_none(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_osrm_route_network_error_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _FakeResponse({}, status_code=500))
+    monkeypatch.setattr(routing, "_get_http_client", lambda: _FakeClient(lambda *a, **kw: _FakeResponse({}, status_code=500)))
 
     result = routing.OSRMRoutingProvider().route(origin_lat=40.7, origin_lng=-74.0, dest_lat=40.8, dest_lng=-74.1)
 
@@ -69,17 +75,12 @@ def test_osrm_route_network_error_returns_none(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_osrm_route_matrix_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        httpx,
-        "get",
-        lambda *a, **kw: _FakeResponse(
-            {
-                "code": "Ok",
-                "durations": [[0, 600, 900], [600, 0, 450], [900, 450, 0]],
-                "distances": [[0, 5000, 8000], [5000, 0, 4000], [8000, 4000, 0]],
-            }
-        ),
-    )
+    body = {
+        "code": "Ok",
+        "durations": [[0, 600, 900], [600, 0, 450], [900, 450, 0]],
+        "distances": [[0, 5000, 8000], [5000, 0, 4000], [8000, 4000, 0]],
+    }
+    monkeypatch.setattr(routing, "_get_http_client", lambda: _FakeClient(lambda *a, **kw: _FakeResponse(body)))
 
     matrix = routing.OSRMRoutingProvider().route_matrix(points=[(40.7, -74.0), (40.8, -74.1), (40.6, -74.2)])
 
@@ -90,13 +91,8 @@ def test_osrm_route_matrix_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_osrm_route_matrix_with_unreachable_pair(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        httpx,
-        "get",
-        lambda *a, **kw: _FakeResponse(
-            {"code": "Ok", "durations": [[0, None], [None, 0]], "distances": [[0, None], [None, 0]]}
-        ),
-    )
+    body = {"code": "Ok", "durations": [[0, None], [None, 0]], "distances": [[0, None], [None, 0]]}
+    monkeypatch.setattr(routing, "_get_http_client", lambda: _FakeClient(lambda *a, **kw: _FakeResponse(body)))
 
     matrix = routing.OSRMRoutingProvider().route_matrix(points=[(40.7, -74.0), (0.0, 0.0)])
 
@@ -109,7 +105,7 @@ def test_osrm_route_matrix_whole_request_failure_returns_none(monkeypatch: pytes
     def fake_get(*args, **kwargs):
         raise httpx.TimeoutException("timed out")
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(routing, "_get_http_client", lambda: _FakeClient(fake_get))
 
     matrix = routing.OSRMRoutingProvider().route_matrix(points=[(40.7, -74.0), (40.8, -74.1)])
 

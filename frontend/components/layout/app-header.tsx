@@ -21,6 +21,9 @@ export function AppHeader() {
           <Link href="/patients" className="font-semibold tracking-tight">
             RouteCare AI
           </Link>
+          <Link href="/dashboard" className="text-sm text-muted-foreground hover:text-foreground">
+            Dashboard
+          </Link>
           <Link href="/patients" className="text-sm text-muted-foreground hover:text-foreground">
             Patients
           </Link>

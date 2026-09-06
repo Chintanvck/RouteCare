@@ -95,7 +95,10 @@ def _no_external_geocoding_or_routing(monkeypatch: pytest.MonkeyPatch) -> None:
 def _fake_redis_cache(monkeypatch: pytest.MonkeyPatch) -> dict:
     """In-memory stand-in for Redis so cache tests are deterministic and no test requires a real
     Redis instance - app.core.cache already treats any Redis error as a miss, but that would make
-    every cache test silently a no-op rather than actually exercising caching."""
+    every cache test silently a no-op rather than actually exercising caching.
+
+    `incr`/`expire` back app.core.rate_limiting's fixed-window counters (Phase 9) - `expire` is a
+    no-op here since no test needs a counter to actually lapse mid-test, only to accumulate."""
     from app.core import cache as cache_module
 
     store: dict[str, str] = {}
@@ -106,9 +109,19 @@ def _fake_redis_cache(monkeypatch: pytest.MonkeyPatch) -> dict:
     def fake_setex(key: str, ttl_seconds: int, value: str) -> None:
         store[key] = value
 
+    def fake_incr(key: str) -> int:
+        new_value = int(store.get(key, "0")) + 1
+        store[key] = str(new_value)
+        return new_value
+
+    def fake_expire(key: str, ttl_seconds: int) -> bool:
+        return key in store
+
     class _FakeRedisClient:
         get = staticmethod(fake_get)
         setex = staticmethod(fake_setex)
+        incr = staticmethod(fake_incr)
+        expire = staticmethod(fake_expire)
 
     monkeypatch.setattr(cache_module, "get_redis_client", lambda: _FakeRedisClient())
     return store

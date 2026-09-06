@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # Celery - dev/demo convenience only. Runs tasks synchronously in-process
     # instead of dispatching to a worker via Redis. Never set true in production.
     CELERY_TASK_ALWAYS_EAGER: bool = False
+    # Backstop timeouts (Phase 9) - defense-in-depth against a hung network call or pathological
+    # input occupying a worker forever; per-call HTTP timeouts (ROUTING_TIMEOUT_SECONDS etc.) are
+    # the first line of defense and should trip long before these do. Soft raises
+    # SoftTimeLimitExceeded inside the task (caught by the same broad except Exception every task's
+    # service function already has, so the request/job ends up FAILED, never stuck); hard SIGKILLs
+    # the worker process a bit later as a last resort if the soft signal is somehow swallowed.
+    CELERY_TASK_SOFT_TIME_LIMIT_SECONDS: int = Field(default=300, gt=0)
+    CELERY_TASK_TIME_LIMIT_SECONDS: int = Field(default=360, gt=0)
 
     # Maps & travel-time (Phase 5). Public demo servers by default per
     # docs/03_System_Architecture.md section 9 (OpenStreetMap/Nominatim/OSRM) -
@@ -81,6 +89,30 @@ class Settings(BaseSettings):
     OPTIMIZATION_DEFAULT_SEARCH_DAYS: int = Field(default=14, gt=0)
     OPTIMIZATION_MAX_APPOINTMENTS_PER_DAY: int = Field(default=20, gt=1)
 
+    # Rate limiting (Phase 9). Redis-backed fixed-window counters - see app/core/rate_limiting.py.
+    # Login/register/password-reset limits are per (ip, email-or-ip) pair; the "expensive
+    # operation" limits (import upload, optimization requests, geocode, travel-time matrix) are
+    # per authenticated user, since those endpoints require auth already.
+    RATE_LIMIT_LOGIN_MAX_ATTEMPTS: int = Field(default=5, gt=0)
+    RATE_LIMIT_LOGIN_WINDOW_SECONDS: int = Field(default=15 * 60, gt=0)
+    RATE_LIMIT_PASSWORD_RESET_MAX_ATTEMPTS: int = Field(default=3, gt=0)
+    RATE_LIMIT_PASSWORD_RESET_WINDOW_SECONDS: int = Field(default=60 * 60, gt=0)
+    RATE_LIMIT_REGISTER_MAX_ATTEMPTS: int = Field(default=5, gt=0)
+    RATE_LIMIT_REGISTER_WINDOW_SECONDS: int = Field(default=60 * 60, gt=0)
+    RATE_LIMIT_IMPORT_UPLOAD_MAX: int = Field(default=10, gt=0)
+    RATE_LIMIT_IMPORT_UPLOAD_WINDOW_SECONDS: int = Field(default=60 * 60, gt=0)
+    RATE_LIMIT_OPTIMIZATION_MAX: int = Field(default=30, gt=0)
+    RATE_LIMIT_OPTIMIZATION_WINDOW_SECONDS: int = Field(default=60 * 60, gt=0)
+    RATE_LIMIT_GEOCODE_MAX: int = Field(default=30, gt=0)
+    RATE_LIMIT_GEOCODE_WINDOW_SECONDS: int = Field(default=60 * 60, gt=0)
+    RATE_LIMIT_TRAVEL_MATRIX_MAX: int = Field(default=60, gt=0)
+    RATE_LIMIT_TRAVEL_MATRIX_WINDOW_SECONDS: int = Field(default=60 * 60, gt=0)
+
+    # Request body size cap (Phase 9), enforced by app.core.middleware.MaxBodySizeMiddleware for
+    # every request except the import upload endpoint, which enforces its own larger
+    # IMPORT_MAX_FILE_SIZE_BYTES limit directly against the multipart stream instead.
+    MAX_REQUEST_BODY_BYTES: int = Field(default=1 * 1024 * 1024, gt=0)  # 1 MB - generous for JSON bodies
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
@@ -101,6 +133,11 @@ class Settings(BaseSettings):
         if self.CELERY_TASK_ALWAYS_EAGER:
             problems.append(
                 "CELERY_TASK_ALWAYS_EAGER must be false in production - background jobs would block requests."
+            )
+        insecure_origins = [o for o in self.cors_origins_list if "localhost" in o or "127.0.0.1" in o]
+        if insecure_origins or not self.cors_origins_list:
+            problems.append(
+                "CORS_ORIGINS must be set to the real production frontend origin(s), not localhost/empty, in production."
             )
 
         if problems:

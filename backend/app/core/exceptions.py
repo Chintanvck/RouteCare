@@ -91,6 +91,20 @@ class BusinessRuleError(AppError):
     default_code = "BUSINESS_RULE_VIOLATION"
 
 
+class RateLimitedError(AppError):
+    """Too many requests in the current window - see app.core.rate_limiting."""
+
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    default_code = "RATE_LIMITED"
+
+
+# Note: there is no PayloadTooLargeError class here - app.core.middleware.MaxBodySizeMiddleware
+# sends its 413 response directly at the ASGI level instead of raising, since app.add_middleware
+# -registered middleware sits *outside* Starlette's own exception-handling middleware and a raised
+# exception there would never reach register_exception_handlers below. See that middleware's own
+# docstring for the full explanation.
+
+
 def _error_response(status_code: int, code: str, message: str, details: dict[str, Any] | None = None) -> JSONResponse:
     body = {
         "success": False,

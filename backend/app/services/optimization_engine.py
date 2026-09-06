@@ -192,6 +192,38 @@ def _leg_minutes(travel_matrix: list[list[TravelLeg | None]], a: int, b: int) ->
     return round(leg.minutes), False
 
 
+@dataclass(frozen=True)
+class RouteLeg:
+    """One traveled leg of a chronological route - see fixed_order_legs. `from_node`/`to_node`
+    use the same node numbering as travel_matrix (0 = home/start location, i+1 = visits[i]), so a
+    caller can distinguish a home-adjacent leg (either endpoint is 0) from a purely
+    inter-appointment leg - e.g. Phase 8 analytics reports "total driving" including home legs but
+    "average travel between appointments" excluding them, without a second traversal."""
+
+    from_node: int
+    to_node: int
+    minutes: float
+    miles: float
+
+
+def fixed_order_legs(
+    visits: list[ScheduledVisit], travel_matrix: list[list[TravelLeg | None]]
+) -> list[RouteLeg]:
+    """The leg-by-leg breakdown of `visits` taken in their *original_start_minute* order - i.e.
+    without any reordering. A leg whose matrix cell is None (unreachable/uncalculated) is simply
+    omitted, matching fixed_order_metrics' existing "skip it" behavior. Node 0 in travel_matrix is
+    always home/start location; visit i is node i+1."""
+    order = sorted(range(len(visits)), key=lambda i: visits[i].original_start_minute)
+    legs: list[RouteLeg] = []
+    prev_node = 0
+    for i in order:
+        leg = travel_matrix[prev_node][i + 1]
+        if leg is not None:
+            legs.append(RouteLeg(from_node=prev_node, to_node=i + 1, minutes=leg.minutes, miles=leg.miles))
+        prev_node = i + 1
+    return legs
+
+
 def fixed_order_metrics(
     visits: list[ScheduledVisit], travel_matrix: list[list[TravelLeg | None]]
 ) -> tuple[float, float]:
@@ -200,17 +232,8 @@ def fixed_order_metrics(
     time_saved_minutes/miles_saved, and directly by the What-If evaluation (which never re-orders
     anything, only asks "what does this day cost as currently/hypothetically scheduled").
     Node 0 in travel_matrix is always home/start location; visit i is node i+1."""
-    order = sorted(range(len(visits)), key=lambda i: visits[i].original_start_minute)
-    total_minutes = 0.0
-    total_miles = 0.0
-    prev_node = 0
-    for i in order:
-        leg = travel_matrix[prev_node][i + 1]
-        if leg is not None:
-            total_minutes += leg.minutes
-            total_miles += leg.miles
-        prev_node = i + 1
-    return total_minutes, total_miles
+    legs = fixed_order_legs(visits, travel_matrix)
+    return sum(leg.minutes for leg in legs), sum(leg.miles for leg in legs)
 
 
 def _baseline_drive_minutes(visits: list[ScheduledVisit], travel_matrix: list[list[TravelLeg | None]]) -> float:

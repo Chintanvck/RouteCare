@@ -16,7 +16,8 @@ from app.core import health
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging_config import configure_logging
-from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from app.core.middleware import MaxBodySizeMiddleware, RequestContextMiddleware, SecurityHeadersMiddleware
+from app.modules.analytics.router import router as analytics_router
 from app.modules.auth.router import router as auth_router
 from app.modules.imports.router import router as imports_router
 from app.modules.maps.router import router as maps_router
@@ -79,6 +80,13 @@ tags_metadata = [
         "every hard constraint before touching an appointment. Available to every clinic role; "
         "therapists are restricted to their own schedule.",
     },
+    {
+        "name": "analytics",
+        "description": "Operational analytics/efficiency dashboard: appointment volume, driving time/"
+        "distance, therapist utilization, schedule efficiency, and the impact of *accepted* "
+        "optimization recommendations only. Every metric is server-computed and clinic-scoped; "
+        "therapists see only their own data.",
+    },
 ]
 
 app = FastAPI(
@@ -104,6 +112,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Import upload is exempted - it enforces its own larger, streaming-checked
+# IMPORT_MAX_FILE_SIZE_BYTES limit directly (see app.modules.imports.router._read_bounded).
+app.add_middleware(
+    MaxBodySizeMiddleware,  # type: ignore[arg-type]
+    max_bytes=settings.MAX_REQUEST_BODY_BYTES,
+    exempt_path_prefixes=(f"{settings.API_V1_PREFIX}/imports",),
+)
 # mypy's Starlette stubs expect middleware constructors to match a
 # specific ParamSpec-based protocol that plain ASGI classes (as opposed
 # to BaseHTTPMiddleware subclasses) don't structurally satisfy, even
@@ -121,6 +136,7 @@ app.include_router(therapists_router, prefix=f"{settings.API_V1_PREFIX}/therapis
 app.include_router(scheduling_router, prefix=f"{settings.API_V1_PREFIX}/appointments", tags=["scheduling"])
 app.include_router(maps_router, prefix=f"{settings.API_V1_PREFIX}/maps", tags=["maps"])
 app.include_router(optimization_router, prefix=f"{settings.API_V1_PREFIX}/optimization", tags=["optimization"])
+app.include_router(analytics_router, prefix=f"{settings.API_V1_PREFIX}/analytics", tags=["analytics"])
 
 
 @app.get("/health", tags=["health"])
@@ -158,7 +174,3 @@ def readiness() -> JSONResponse:
         status_code=200 if ready else 503,
         content={"status": "ok" if ready else "unavailable", "checks": checks},
     )
-
-
-# Remaining feature routers (analytics, ...) are included here as each
-# module is implemented in later phases.

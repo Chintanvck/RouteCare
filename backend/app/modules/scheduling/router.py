@@ -170,5 +170,9 @@ def cancel_appointment(
 ) -> None:
     restrict_to = _own_therapist_id_if_therapist(db, clinic_id=clinic_id, current_user=current_user)
     appointment_service.cancel_appointment(
-        db, clinic_id=clinic_id, appointment_id=appointment_id, restrict_to_therapist_id=restrict_to
+        db,
+        clinic_id=clinic_id,
+        appointment_id=appointment_id,
+        restrict_to_therapist_id=restrict_to,
+        actor_user_id=current_user.id,
     )

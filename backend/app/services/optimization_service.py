@@ -68,7 +68,7 @@ from app.schemas.optimization import (
     WhatIfResponse,
     WhatIfScenarioType,
 )
-from app.services import appointment_service, patient_service, therapist_service
+from app.services import appointment_service, audit_service, patient_service, therapist_service
 from app.services import optimization_engine as engine
 from app.services.scheduling_validation import TimeRange, check_patient_availability, check_therapist_working_hours
 from app.services.travel_time_service import LocationPoint, get_travel_time_matrix
@@ -230,12 +230,16 @@ def _patient_day_windows(db: Session, *, patient_id: uuid.UUID, day_of_week: int
     return not_available, permitted
 
 
-def _build_travel_matrix(
+def build_travel_matrix(
     *, clinic_id: uuid.UUID, therapist: Therapist, patient_points: list[LocationPoint]
 ) -> list[list[engine.TravelLeg | None]]:
     """(N+1)x(N+1) matrix: node 0 = therapist home (if geocoded), node i+1 = patient_points[i].
     If the therapist has no geocoded home, home-adjacent legs are reported as zero-cost (not
-    unreachable) - "starting location when available" per the task, not a hard requirement."""
+    unreachable) - "starting location when available" per the task, not a hard requirement.
+
+    Public (not `_`-prefixed) because app.services.analytics_service (Phase 8) reuses this exact
+    matrix-building logic for its own driving-time calculations - one implementation of "how to
+    build a therapist's travel matrix," never a second one that could drift out of sync."""
     n = len(patient_points)
     size = n + 1
 
@@ -337,7 +341,7 @@ def _compute_day_schedule_recommendation(
         )
 
     patient_points = [LocationPoint(*_require_coords(a.patient.latitude, a.patient.longitude)) for a in appointments]
-    travel_matrix = _build_travel_matrix(clinic_id=clinic_id, therapist=therapist, patient_points=patient_points)
+    travel_matrix = build_travel_matrix(clinic_id=clinic_id, therapist=therapist, patient_points=patient_points)
 
     result = engine.optimize_day_schedule(
         visits=visits,
@@ -621,6 +625,16 @@ def run_optimization(db: Session, request_id: uuid.UUID) -> None:
     if request is None:
         return
 
+    # A redelivered/duplicate Celery message for a request this (or another) worker already
+    # started or finished must never recompute and insert a second set of recommendation rows -
+    # PENDING is the only status a fresh run is ever allowed to start from.
+    if request.status != OptimizationStatus.PENDING:
+        app_logger.warning(
+            "optimization_run_skipped_not_pending",
+            extra={"optimization_request_id": str(request_id), "status": request.status.value},
+        )
+        return
+
     request.status = OptimizationStatus.PROCESSING
     db.commit()
 
@@ -870,6 +884,15 @@ def accept_recommendation(
 
     recommendation.accepted_at = datetime.now(timezone.utc)
     recommendation.rejected_at = None  # accepting supersedes an earlier change-of-mind rejection
+    audit_service.record(
+        db,
+        clinic_id=clinic_id,
+        user_id=current_user.id,
+        action="OPTIMIZATION_RECOMMENDATION_ACCEPTED",
+        entity_type="OPTIMIZATION_RECOMMENDATION",
+        entity_id=recommendation.id,
+        new_value={"mode": request.mode.value, "appointments_changed": len(appointment_ids)},
+    )
     db.commit()
     db.refresh(recommendation)
     return recommendation, appointment_ids
@@ -969,7 +992,7 @@ def _day_metrics(
 
     therapist = db.get(Therapist, therapist_id)
     assert therapist is not None  # already validated by the caller before _day_metrics is ever invoked
-    travel_matrix = _build_travel_matrix(clinic_id=clinic_id, therapist=therapist, patient_points=patient_points)
+    travel_matrix = build_travel_matrix(clinic_id=clinic_id, therapist=therapist, patient_points=patient_points)
     return engine.fixed_order_metrics(visits, travel_matrix)
 
 
@@ -1191,7 +1214,11 @@ def apply_what_if(
     if data.scenario_type == WhatIfScenarioType.REMOVE:
         assert appointment is not None
         appointment_service.cancel_appointment(
-            db, clinic_id=clinic_id, appointment_id=appointment.id, restrict_to_therapist_id=restrict_to_therapist_id
+            db,
+            clinic_id=clinic_id,
+            appointment_id=appointment.id,
+            restrict_to_therapist_id=restrict_to_therapist_id,
+            actor_user_id=created_by,
         )
         return True, appointment.id, "Appointment cancelled."
 

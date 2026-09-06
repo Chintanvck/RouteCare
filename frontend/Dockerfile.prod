@@ -1,0 +1,35 @@
+# Production image: a real `next build` served by `next start`, never `next dev` - multi-stage so
+# the final image doesn't carry devDependencies/build tooling it no longer needs at runtime.
+
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+# No `public/` to copy - this app doesn't have one (no static assets served that way yet); add a
+# `COPY --from=builder /app/public ./public` line here if one is ever added.
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/next.config.mjs ./next.config.mjs
+
+# node:20-alpine already ships an unprivileged "node" user - no need to create one.
+RUN chown -R node:node /app
+USER node
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -qO- http://localhost:3000/ || exit 1
+
+CMD ["npm", "run", "start"]

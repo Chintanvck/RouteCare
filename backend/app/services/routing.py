@@ -15,11 +15,23 @@ belongs in the schema/frontend layer, not baked into the provider
 result.
 """
 
+from functools import lru_cache
 from typing import Protocol
 
 import httpx
 
 from app.core.config import settings
+
+
+@lru_cache
+def _get_http_client() -> httpx.Client:
+    """One pooled, keep-alive httpx.Client reused across every OSRM call in this process, instead
+    of the ad-hoc `httpx.get(...)` module function (which opens a brand-new connection - full
+    TCP+TLS handshake - on every single call). Safe to share across threads: httpx.Client's
+    synchronous API is documented as thread-safe for concurrent requests. One instance per process
+    (web worker or Celery worker) - never closed explicitly, same lifetime as
+    app.core.cache.get_redis_client()'s connection."""
+    return httpx.Client(timeout=settings.ROUTING_TIMEOUT_SECONDS)
 
 
 class RouteResult:
@@ -61,10 +73,9 @@ class OSRMRoutingProvider:
     def route(self, *, origin_lat: float, origin_lng: float, dest_lat: float, dest_lng: float) -> RouteResult | None:
         coords = f"{origin_lng},{origin_lat};{dest_lng},{dest_lat}"
         try:
-            response = httpx.get(
+            response = _get_http_client().get(
                 f"{settings.OSRM_BASE_URL}/route/v1/driving/{coords}",
                 params={"overview": "false"},
-                timeout=settings.ROUTING_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             body = response.json()
@@ -86,10 +97,9 @@ class OSRMRoutingProvider:
 
         coords = ";".join(f"{lng},{lat}" for lat, lng in points)
         try:
-            response = httpx.get(
+            response = _get_http_client().get(
                 f"{settings.OSRM_BASE_URL}/table/v1/driving/{coords}",
                 params={"annotations": "duration,distance"},
-                timeout=settings.ROUTING_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             body = response.json()

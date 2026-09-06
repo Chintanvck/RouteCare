@@ -16,10 +16,13 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_clinic_id
+from app.core.config import settings
+from app.core.dependencies import get_current_clinic_id, get_current_user
 from app.core.permissions import UserRole, require_role
+from app.core.rate_limiting import rate_limit
 from app.database.session import get_db
 from app.models.patient import GeocodingStatus
+from app.models.user import User
 from app.schemas.availability import PatientAvailabilityPublic, SetPatientAvailabilityRequest
 from app.schemas.common import PaginatedResponse, PaginationParams
 from app.schemas.maps import PatientGeocodeResponse
@@ -64,9 +67,10 @@ def list_patients(
 def create_patient(
     payload: PatientCreate,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PatientPublic:
-    patient = patient_service.create_patient(db, clinic_id=clinic_id, data=payload)
+    patient = patient_service.create_patient(db, clinic_id=clinic_id, data=payload, actor_user_id=current_user.id)
     return PatientPublic.model_validate(patient)
 
 
@@ -85,9 +89,12 @@ def update_patient(
     patient_id: uuid.UUID,
     payload: PatientUpdate,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PatientPublic:
-    patient = patient_service.update_patient(db, clinic_id=clinic_id, patient_id=patient_id, data=payload)
+    patient = patient_service.update_patient(
+        db, clinic_id=clinic_id, patient_id=patient_id, data=payload, actor_user_id=current_user.id
+    )
     return PatientPublic.model_validate(patient)
 
 
@@ -95,15 +102,23 @@ def update_patient(
 def delete_patient(
     patient_id: uuid.UUID,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> None:
-    patient_service.soft_delete_patient(db, clinic_id=clinic_id, patient_id=patient_id)
+    patient_service.soft_delete_patient(db, clinic_id=clinic_id, patient_id=patient_id, actor_user_id=current_user.id)
 
 
 @router.post(
     "/{patient_id}/geocode",
     response_model=PatientGeocodeResponse,
-    dependencies=[Depends(require_role(*_WRITE_ROLES))],
+    dependencies=[
+        Depends(require_role(*_WRITE_ROLES)),
+        Depends(
+            rate_limit(
+                "geocode", limit=settings.RATE_LIMIT_GEOCODE_MAX, window_seconds=settings.RATE_LIMIT_GEOCODE_WINDOW_SECONDS
+            )
+        ),
+    ],
 )
 def geocode_patient(
     patient_id: uuid.UUID,

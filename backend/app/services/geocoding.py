@@ -22,12 +22,20 @@ import hashlib
 import threading
 import time
 import uuid
+from functools import lru_cache
 from typing import Any, Protocol
 
 import httpx
 
 from app.core.cache import cache_get_json, cache_set_json, make_cache_key
 from app.core.config import settings
+
+
+@lru_cache
+def _get_http_client() -> httpx.Client:
+    """Pooled, keep-alive httpx.Client reused across every Nominatim call in this process - see
+    app.services.routing._get_http_client's docstring for the full rationale (identical here)."""
+    return httpx.Client(timeout=settings.GEOCODING_TIMEOUT_SECONDS)
 
 
 class GeocodeResult:
@@ -98,11 +106,10 @@ class NominatimGeocodingProvider:
 
         _nominatim_rate_limiter.wait()
         try:
-            response = httpx.get(
+            response = _get_http_client().get(
                 f"{settings.NOMINATIM_BASE_URL}/search",
                 params={"q": query, "format": "jsonv2", "addressdetails": 0, "limit": 1},
                 headers={"User-Agent": settings.NOMINATIM_USER_AGENT},
-                timeout=settings.GEOCODING_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             results = response.json()

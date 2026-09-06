@@ -12,6 +12,7 @@ context set by get_current_user() is reliably visible in the access-log
 line emitted after the response.
 """
 
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -117,3 +118,68 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
+
+
+class MaxBodySizeMiddleware:
+    """
+    Rejects a request whose declared `Content-Length` exceeds `max_bytes` before it ever reaches
+    routing/Pydantic validation - a generic backstop against oversized JSON payloads (per the task's
+    explicit "payload size limits" requirement), independent of the import upload endpoint's own
+    larger, streaming-enforced `IMPORT_MAX_FILE_SIZE_BYTES` check (see
+    app.modules.imports.router._read_bounded) - multipart file uploads are exempted here via
+    `exempt_path_prefixes` since they're expected to be larger than any JSON body and are already
+    bounded on their own.
+
+    Deliberately a plain ASGI class, not a raised AppError: app.add_middleware-registered
+    middleware sits *outside* Starlette's own exception-handling middleware, so an exception raised
+    here would never reach app.core.exceptions.register_exception_handlers - this sends the same
+    error envelope shape directly instead. A request with no Content-Length header (e.g. chunked
+    transfer-encoding) is let through unchecked - genuinely large chunked bodies are rare for this
+    API's JSON endpoints, and the one endpoint that legitimately handles large bodies (file upload)
+    is exempted anyway.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_bytes: int, exempt_path_prefixes: tuple[str, ...] = ()) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+        self.exempt_path_prefixes = exempt_path_prefixes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if any(path.startswith(prefix) for prefix in self.exempt_path_prefixes):
+            await self.app(scope, receive, send)
+            return
+
+        content_length = _header_value(scope, b"content-length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except ValueError:
+                declared_size = None
+            if declared_size is not None and declared_size > self.max_bytes:
+                body = json.dumps(
+                    {
+                        "success": False,
+                        "error": {
+                            "code": "PAYLOAD_TOO_LARGE",
+                            "message": "Request body is too large.",
+                            "details": {},
+                        },
+                        "request_id": request_id_var.get(),
+                    }
+                ).encode("utf-8")
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 413,
+                        "headers": [(b"content-type", b"application/json")],
+                    }
+                )
+                await send({"type": "http.response.body", "body": body})
+                return
+
+        await self.app(scope, receive, send)

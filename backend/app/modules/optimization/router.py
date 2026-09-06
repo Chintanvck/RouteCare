@@ -25,9 +25,11 @@ import uuid
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.dependencies import get_current_clinic_id, get_current_user
 from app.core.exceptions import NotFoundError
 from app.core.permissions import UserRole, require_role
+from app.core.rate_limiting import rate_limit
 from app.database.session import get_db
 from app.models.user import User
 from app.schemas.optimization import (
@@ -62,7 +64,16 @@ def _own_therapist_id_if_therapist(db: Session, *, clinic_id: uuid.UUID, current
     "/requests",
     response_model=OptimizationRequestPublic,
     status_code=201,
-    dependencies=[Depends(require_role(*_ALLOWED_ROLES))],
+    dependencies=[
+        Depends(require_role(*_ALLOWED_ROLES)),
+        Depends(
+            rate_limit(
+                "optimization_create",
+                limit=settings.RATE_LIMIT_OPTIMIZATION_MAX,
+                window_seconds=settings.RATE_LIMIT_OPTIMIZATION_WINDOW_SECONDS,
+            )
+        ),
+    ],
 )
 def create_optimization_request(
     payload: CreateOptimizationRequest,
