@@ -19,11 +19,14 @@ def test_celery_app_uses_json_serialization_only() -> None:
     assert celery_app.conf.result_serializer == "json"
 
 
-def test_celery_app_broker_and_backend_come_from_settings() -> None:
+def test_celery_app_broker_comes_from_settings_and_has_no_result_backend() -> None:
+    """No result backend is configured on purpose (see test_celery_app.py for the full story) -
+    nothing in this codebase reads a task's result via Celery's own AsyncResult/.get(), and a
+    Redis-backed one was actively broken against Upstash's rediss:// URL in production."""
     from app.core.config import settings
 
     assert celery_app.conf.broker_url == settings.REDIS_URL
-    assert celery_app.conf.result_backend == settings.REDIS_URL
+    assert celery_app.conf.result_backend is None
 
 
 def test_ping_task_is_registered() -> None:

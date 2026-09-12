@@ -11,6 +11,21 @@ Celery can use pickle for serialization, which executes arbitrary code
 on deserialization if the broker/result backend is ever compromised or
 misconfigured. JSON has no such risk.
 
+No result backend is configured (Celery defaults to `DisabledBackend`,
+a real no-op). Nothing in this codebase ever reads a task's result via
+Celery's own AsyncResult/.get() - progress is tracked through the
+OptimizationRequest.status/ImportJob.status DB columns instead (see
+app/workers/optimization_tasks.py, app/workers/import_tasks.py), so a
+result backend was always dead weight. It was also actively broken
+against Upstash's `rediss://` URL (Phase 12 free-tier deployment):
+Celery's own Redis result-backend client requires an `ssl_cert_reqs`
+query param in a different format (`CERT_REQUIRED`/`CERT_NONE`) than
+plain redis-py's `from_url` expects for the same conceptual setting
+(`required`/`none`) - the same REDIS_URL literally cannot satisfy both
+parsers at once. Since the backend was never used for anything, removing
+it entirely sidesteps that conflict rather than needing two different
+Redis URLs for one Redis instance.
+
 Task modules are imported explicitly at the bottom of this file rather
 than via `autodiscover_tasks` - autodiscover only looks for a module
 literally named "tasks" per package, which stopped covering everything
@@ -24,7 +39,7 @@ from celery import Celery
 
 from app.core.config import settings
 
-celery_app = Celery("routecare", broker=settings.REDIS_URL, backend=settings.REDIS_URL)
+celery_app = Celery("routecare", broker=settings.REDIS_URL)
 
 celery_app.conf.update(
     task_serializer="json",
