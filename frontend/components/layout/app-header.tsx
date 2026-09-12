@@ -1,23 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
-import { Button } from "@/components/ui/button";
-import { clearTokens } from "@/lib/auth";
+import { UserMenu } from "@/components/layout/user-menu";
 import { useCurrentUser } from "@/lib/use-current-user";
 
 export function AppHeader() {
-  const router = useRouter();
   // AppHeader only ever mounts on an already-authenticated page (every page renders it after its
   // own useRequireAuth check passes), so there's no "not logged in yet" case to gate this on.
   const { user } = useCurrentUser(true);
   const isTherapist = user?.role === "THERAPIST";
-
-  function handleLogout() {
-    clearTokens();
-    router.push("/login");
-  }
 
   return (
     <header className="border-b bg-background">
@@ -50,9 +42,7 @@ export function AppHeader() {
             Optimize
           </Link>
         </nav>
-        <Button variant="ghost" size="sm" className="shrink-0" onClick={handleLogout}>
-          Log out
-        </Button>
+        {user && <UserMenu user={user} />}
       </div>
     </header>
   );
