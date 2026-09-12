@@ -1,3 +1,5 @@
+import { Navigation } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import { buildNavigationUrl } from "@/lib/navigation";
 import type { Appointment } from "@/types/appointment";
@@ -54,7 +56,7 @@ export function AppointmentCard({
       </div>
       <p className="mt-1 font-medium">{appointment.patient_name}</p>
       {showTherapist && <p className="text-muted-foreground">{appointment.therapist_name}</p>}
-      <p className="mt-0.5 truncate text-xs text-muted-foreground">{appointment.patient_address}</p>
+      <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{appointment.patient_address}</p>
       {travelTimeMinutes != null && (
         <p className="mt-0.5 text-xs text-muted-foreground">~{Math.round(travelTimeMinutes)} min drive</p>
       )}
@@ -62,8 +64,9 @@ export function AppointmentCard({
         <button
           type="button"
           onClick={(e) => handleNavigateClick(e, navigationUrl)}
-          className="mt-2 inline-flex h-8 items-center gap-1 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          className="mt-2 inline-flex h-10 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
         >
+          <Navigation className="h-4 w-4" />
           Navigate
         </button>
       )}

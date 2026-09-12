@@ -93,7 +93,7 @@ export default function DashboardPage() {
     return (
       <>
         <AppHeader />
-        <main className="container max-w-4xl space-y-6 py-8">
+        <main className="container max-w-4xl space-y-4 py-4 sm:space-y-6 sm:py-8">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Your schedule</h1>
             <p className="text-sm text-muted-foreground">Today&apos;s appointments, driving time, and optimization - just for you.</p>
