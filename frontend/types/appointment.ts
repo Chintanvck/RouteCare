@@ -18,6 +18,11 @@ export interface Appointment {
   updated_at: string;
   patient_name: string;
   therapist_name: string;
+  // "Navigate" enrichment (Phase 11) - latitude/longitude are null until the patient is
+  // geocoded; patient_address is always present as a fallback destination.
+  patient_address: string;
+  patient_latitude: number | null;
+  patient_longitude: number | null;
 }
 
 export interface AppointmentFormValues {

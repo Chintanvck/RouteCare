@@ -17,7 +17,11 @@ from app.models.appointment import AppointmentStatus
 
 class AppointmentCreate(BaseModel):
     patient_id: uuid.UUID
-    therapist_id: uuid.UUID
+    # Optional so a THERAPIST-role caller's client never has to know/send their own id - the
+    # service resolves it from the authenticated user instead (and ignores/overrides this field
+    # entirely for that role - see appointment_service.create_appointment). Still effectively
+    # required for CLINIC_ADMIN/OFFICE_SCHEDULER, who have no such fallback.
+    therapist_id: uuid.UUID | None = None
     scheduled_date: date
     start_time: time
     duration_minutes: int = Field(gt=0, le=480)
@@ -70,5 +74,12 @@ class AppointmentPublic(BaseModel):
     # Enrichment for calendar rendering - avoids a second round-trip per appointment.
     patient_name: str
     therapist_name: str
+    # Enrichment for the "Navigate" action (Phase 11) - lets the frontend build a maps/navigation
+    # link straight from the appointment list, without fetching the patient record separately.
+    # latitude/longitude are None until the patient is geocoded; the frontend falls back to
+    # patient_address (always present) in that case.
+    patient_address: str
+    patient_latitude: float | None
+    patient_longitude: float | None
 
     model_config = {"from_attributes": True}

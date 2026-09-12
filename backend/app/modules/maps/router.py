@@ -7,7 +7,12 @@ patient CRUD is, and a therapist reasonably wants to check drive time
 between their own visits. Every point is still resolved through
 patient_service/therapist_service's own clinic-scoped 404 lookups, so a
 patient_id/therapist_id from another clinic is unreachable here exactly
-like everywhere else in the API.
+like everywhere else in the API. A THERAPIST caller is further
+restricted (Phase 11) to their own home location and their own assigned
+patients - the same `restrict_to_therapist_id` those two services
+already enforce for their own routers - so this endpoint can't be used
+to probe another therapist's home coordinates or an unassigned patient's
+address via a travel-time query.
 
 This module intentionally has no create/update/delete endpoints -
 geocoding patients/therapists stays on their own routers
@@ -22,10 +27,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_clinic_id
-from app.core.exceptions import BusinessRuleError, ValidationError
+from app.core.dependencies import get_current_clinic_id, get_current_user
+from app.core.exceptions import BusinessRuleError, NotFoundError, ValidationError
 from app.core.permissions import UserRole, require_role
 from app.database.session import get_db
+from app.models.user import User
 from app.schemas.maps import (
     LocationRef,
     MatrixCell,
@@ -43,9 +49,23 @@ router = APIRouter()
 _READ_ROLES = (UserRole.CLINIC_ADMIN, UserRole.OFFICE_SCHEDULER, UserRole.THERAPIST)
 
 
-def _resolve_point(db: Session, *, clinic_id: uuid.UUID, ref: LocationRef) -> tuple[LocationPoint, ResolvedPoint]:
+def _own_therapist_id_if_therapist(db: Session, *, clinic_id: uuid.UUID, current_user: User) -> uuid.UUID | None:
+    """Mirrors app.modules.scheduling.router's helper (Phase 11)."""
+    if current_user.role != UserRole.THERAPIST:
+        return None
+    therapist = therapist_service.get_therapist_by_user_id(db, clinic_id=clinic_id, user_id=current_user.id)
+    if therapist is None:
+        raise NotFoundError("Therapist was not found.", code="THERAPIST_NOT_FOUND")
+    return therapist.id
+
+
+def _resolve_point(
+    db: Session, *, clinic_id: uuid.UUID, ref: LocationRef, restrict_to_therapist_id: uuid.UUID | None
+) -> tuple[LocationPoint, ResolvedPoint]:
     if ref.patient_id is not None:
-        patient = patient_service.get_patient(db, clinic_id=clinic_id, patient_id=ref.patient_id)
+        patient = patient_service.get_patient(
+            db, clinic_id=clinic_id, patient_id=ref.patient_id, restrict_to_therapist_id=restrict_to_therapist_id
+        )
         if patient.latitude is None or patient.longitude is None:
             raise BusinessRuleError(f"{patient.full_name} has not been geocoded yet.", code="LOCATION_NOT_GEOCODED")
         latitude, longitude = float(patient.latitude), float(patient.longitude)
@@ -57,7 +77,9 @@ def _resolve_point(db: Session, *, clinic_id: uuid.UUID, ref: LocationRef) -> tu
         )
 
     if ref.therapist_id is not None:
-        therapist = therapist_service.get_therapist(db, clinic_id=clinic_id, therapist_id=ref.therapist_id)
+        therapist = therapist_service.get_therapist(
+            db, clinic_id=clinic_id, therapist_id=ref.therapist_id, restrict_to_therapist_id=restrict_to_therapist_id
+        )
         if therapist.home_latitude is None or therapist.home_longitude is None:
             raise BusinessRuleError(
                 f"{therapist.first_name} {therapist.last_name} has not been geocoded yet.", code="LOCATION_NOT_GEOCODED"
@@ -83,10 +105,14 @@ def _resolve_point(db: Session, *, clinic_id: uuid.UUID, ref: LocationRef) -> tu
 def calculate_travel_time(
     payload: TravelTimeRequest,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TravelTimeResponse:
-    origin_point, _ = _resolve_point(db, clinic_id=clinic_id, ref=payload.origin)
-    destination_point, _ = _resolve_point(db, clinic_id=clinic_id, ref=payload.destination)
+    restrict_to = _own_therapist_id_if_therapist(db, clinic_id=clinic_id, current_user=current_user)
+    origin_point, _ = _resolve_point(db, clinic_id=clinic_id, ref=payload.origin, restrict_to_therapist_id=restrict_to)
+    destination_point, _ = _resolve_point(
+        db, clinic_id=clinic_id, ref=payload.destination, restrict_to_therapist_id=restrict_to
+    )
 
     result = get_travel_time(clinic_id=clinic_id, origin=origin_point, destination=destination_point)
     if result is None:
@@ -108,9 +134,14 @@ def calculate_travel_time(
 def calculate_travel_time_matrix(
     payload: TravelTimeMatrixRequest,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TravelTimeMatrixResponse:
-    resolved = [_resolve_point(db, clinic_id=clinic_id, ref=ref) for ref in payload.points]
+    restrict_to = _own_therapist_id_if_therapist(db, clinic_id=clinic_id, current_user=current_user)
+    resolved = [
+        _resolve_point(db, clinic_id=clinic_id, ref=ref, restrict_to_therapist_id=restrict_to)
+        for ref in payload.points
+    ]
     points = [p for p, _ in resolved]
     labels = [r for _, r in resolved]
 

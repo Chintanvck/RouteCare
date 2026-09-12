@@ -81,3 +81,24 @@ class Appointment(Base, TimestampMixin):
     @property
     def therapist_name(self) -> str:
         return f"{self.therapist.first_name} {self.therapist.last_name}"
+
+    @property
+    def patient_address(self) -> str:
+        """One-line formatted address - Phase 11's "Navigate" action needs somewhere to send a
+        maps app when the patient hasn't been geocoded yet (see patient_latitude/longitude below),
+        and a calendar/appointment card showing an address is generally useful on its own. Reuses
+        the same `patient` relationship patient_name already does - no extra query, since callers
+        already joinedload it (see appointment_service._base_query)."""
+        p = self.patient
+        line2 = f" {p.address_line_2}" if p.address_line_2 else ""
+        return f"{p.address_line_1}{line2}, {p.city}, {p.state} {p.zip_code}"
+
+    @property
+    def patient_latitude(self) -> float | None:
+        lat = self.patient.latitude
+        return float(lat) if lat is not None else None
+
+    @property
+    def patient_longitude(self) -> float | None:
+        lng = self.patient.longitude
+        return float(lng) if lng is not None else None

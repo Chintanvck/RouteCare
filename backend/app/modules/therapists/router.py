@@ -1,10 +1,13 @@
 """
 RouteCare AI - Therapist endpoints.
 
-Read access (list/get/availability) is available to any clinic role;
-create/update/availability-write are restricted to CLINIC_ADMIN and
-OFFICE_SCHEDULER, matching Patient management's pattern and
-docs/09_Security_Privacy_Compliance.md's role table.
+Read access (list/get/availability) is available to any clinic role, but
+a THERAPIST caller is always further restricted to their own record
+(Phase 11 - a therapist has no legitimate need to browse colleagues'
+profiles/availability/schedules); create/update/availability-write stay
+restricted to CLINIC_ADMIN and OFFICE_SCHEDULER, matching Patient
+management's pattern and docs/09_Security_Privacy_Compliance.md's role
+table.
 """
 
 import uuid
@@ -15,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import get_current_clinic_id, get_current_user
+from app.core.exceptions import NotFoundError
 from app.core.permissions import UserRole, require_role
 from app.core.rate_limiting import rate_limit
 from app.database.session import get_db
@@ -32,6 +36,16 @@ _READ_ROLES = (UserRole.CLINIC_ADMIN, UserRole.OFFICE_SCHEDULER, UserRole.THERAP
 _WRITE_ROLES = (UserRole.CLINIC_ADMIN, UserRole.OFFICE_SCHEDULER)
 
 
+def _own_therapist_id_if_therapist(db: Session, *, clinic_id: uuid.UUID, current_user: User) -> uuid.UUID | None:
+    """Mirrors app.modules.scheduling.router's helper (Phase 11)."""
+    if current_user.role != UserRole.THERAPIST:
+        return None
+    therapist = therapist_service.get_therapist_by_user_id(db, clinic_id=clinic_id, user_id=current_user.id)
+    if therapist is None:
+        raise NotFoundError("Therapist was not found.", code="THERAPIST_NOT_FOUND")
+    return therapist.id
+
+
 @router.get("", response_model=PaginatedResponse[TherapistPublic], dependencies=[Depends(require_role(*_READ_ROLES))])
 def list_therapists(
     search: str | None = Query(None, description="Matches against first or last name"),
@@ -40,8 +54,10 @@ def list_therapists(
     sort_order: Literal["asc", "desc"] = Query("asc"),
     pagination: PaginationParams = Depends(),
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PaginatedResponse[TherapistPublic]:
+    restrict_to = _own_therapist_id_if_therapist(db, clinic_id=clinic_id, current_user=current_user)
     items, total = therapist_service.list_therapists(
         db,
         clinic_id=clinic_id,
@@ -50,6 +66,7 @@ def list_therapists(
         is_active=is_active,
         sort_by=sort_by,
         sort_order=sort_order,
+        restrict_to_therapist_id=restrict_to,
     )
     therapists = [TherapistPublic.model_validate(item) for item in items]
     return PaginatedResponse.create(therapists, page=pagination.page, page_size=pagination.page_size, total=total)
@@ -70,9 +87,13 @@ def create_therapist(
 def get_therapist(
     therapist_id: uuid.UUID,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TherapistPublic:
-    therapist = therapist_service.get_therapist(db, clinic_id=clinic_id, therapist_id=therapist_id)
+    restrict_to = _own_therapist_id_if_therapist(db, clinic_id=clinic_id, current_user=current_user)
+    therapist = therapist_service.get_therapist(
+        db, clinic_id=clinic_id, therapist_id=therapist_id, restrict_to_therapist_id=restrict_to
+    )
     return TherapistPublic.model_validate(therapist)
 
 
@@ -125,9 +146,12 @@ def geocode_therapist(
 def get_therapist_availability(
     therapist_id: uuid.UUID,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[TherapistAvailabilityPublic]:
-    therapist_service.get_therapist(db, clinic_id=clinic_id, therapist_id=therapist_id)  # 404s cross-clinic/unknown
+    restrict_to = _own_therapist_id_if_therapist(db, clinic_id=clinic_id, current_user=current_user)
+    # 404s cross-clinic/unknown/another-therapist's ids alike.
+    therapist_service.get_therapist(db, clinic_id=clinic_id, therapist_id=therapist_id, restrict_to_therapist_id=restrict_to)
     rows = availability_service.get_therapist_availability(db, therapist_id=therapist_id)
     return [TherapistAvailabilityPublic.model_validate(r) for r in rows]
 

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PatientCombobox } from "@/components/scheduling/patient-combobox";
 import { apiFetch } from "@/lib/api";
 import type { Appointment, AppointmentFormValues, AppointmentValidateResponse } from "@/types/appointment";
 import type { Patient } from "@/types/patient";
@@ -34,10 +35,20 @@ export function valuesFromAppointment(appt: Appointment): AppointmentFormValues 
   };
 }
 
-export function toApiPayload(values: AppointmentFormValues): Record<string, unknown> {
+/**
+ * `omitAssignment` (Phase 11 fix) - a THERAPIST caller may only change date/start_time/duration/
+ * status on their own appointment (see appointment_service._THERAPIST_UPDATABLE_FIELDS); the
+ * backend rejects the request the moment `patient_id`/`therapist_id` are present in the payload
+ * *at all*, even set to their current, unchanged value - `AppointmentUpdate` uses PATCH semantics
+ * (`exclude_unset=True`), so simply including a key is what counts as "trying to change it," not
+ * whether the value actually differs. Without this, editing (rescheduling) your own appointment
+ * as a therapist always 403'd, since this form always populated every field from
+ * valuesFromAppointment(). Omitting the two assignment fields entirely for that one case is
+ * simpler and more robust than trying to diff values.
+ */
+export function toApiPayload(values: AppointmentFormValues, omitAssignment = false): Record<string, unknown> {
   return {
-    patient_id: values.patient_id,
-    therapist_id: values.therapist_id,
+    ...(omitAssignment ? {} : { patient_id: values.patient_id, therapist_id: values.therapist_id }),
     scheduled_date: values.scheduled_date,
     start_time: `${values.start_time}:00`,
     duration_minutes: Number(values.duration_minutes),
@@ -52,6 +63,23 @@ interface AppointmentFormProps {
   onSubmit: (values: AppointmentFormValues) => Promise<void>;
   onCancel: () => void;
   excludeAppointmentId?: string;
+  /** "create" gets a searchable patient combobox (see PatientCombobox) instead of a `<select>` -
+   * a plain dropdown would mean preloading every clinic patient into the browser just to pick one,
+   * which doesn't scale and (for a THERAPIST picking a not-yet-assigned patient) isn't even the
+   * same authorized set as their existing patient list. "edit" keeps the original `<select>`,
+   * populated from `patients` - reassigning an existing appointment's patient is a separate,
+   * unchanged workflow from "New Appointment." */
+  mode: "create" | "edit";
+  /** True when a THERAPIST is editing their own appointment - they can only change date/time/
+   * duration/status (see toApiPayload's docstring), so the patient/therapist pickers are shown as
+   * plain text instead of editable selects, matching what will actually be submitted. */
+  restrictToOwnSchedule?: boolean;
+  /** True when a THERAPIST is creating a new appointment for themselves - unlike
+   * `restrictToOwnSchedule`, they still pick a patient (from their own authorized list, already
+   * filtered server-side), just never a therapist: `initialValues.therapist_id` is expected to
+   * already be their own id, and the backend overrides it regardless (see
+   * appointment_service.create_appointment), so there's nothing for a picker to do here. */
+  hideTherapistSelect?: boolean;
 }
 
 export function AppointmentForm({
@@ -62,6 +90,9 @@ export function AppointmentForm({
   onSubmit,
   onCancel,
   excludeAppointmentId,
+  mode,
+  restrictToOwnSchedule,
+  hideTherapistSelect,
 }: AppointmentFormProps) {
   const [values, setValues] = useState<AppointmentFormValues>(emptyValues(initialValues));
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -129,45 +160,66 @@ export function AppointmentForm({
         </div>
       )}
 
-      <div className="space-y-1.5">
-        <Label htmlFor="patient_id">Patient</Label>
-        <select
-          id="patient_id"
-          className={SELECT_CLASS}
-          value={values.patient_id}
-          onChange={(e) => update("patient_id", e.target.value)}
-          required
-        >
-          <option value="" disabled>
-            Select a patient
-          </option>
-          {patients.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.first_name} {p.last_name}
-            </option>
-          ))}
-        </select>
-      </div>
+      {restrictToOwnSchedule ? (
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+          <p>
+            <span className="text-muted-foreground">Patient: </span>
+            {patients.find((p) => p.id === values.patient_id)?.first_name ?? "—"}{" "}
+            {patients.find((p) => p.id === values.patient_id)?.last_name ?? ""}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Only the date, time, and duration can be changed here - ask an admin or scheduler to reassign this visit.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="space-y-1.5">
+            <Label htmlFor="patient_id">Patient</Label>
+            {mode === "create" ? (
+              <PatientCombobox value={values.patient_id} onChange={(id) => update("patient_id", id)} />
+            ) : (
+              <select
+                id="patient_id"
+                className={SELECT_CLASS}
+                value={values.patient_id}
+                onChange={(e) => update("patient_id", e.target.value)}
+                required
+              >
+                <option value="" disabled>
+                  Select a patient
+                </option>
+                {patients.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.first_name} {p.last_name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
 
-      <div className="space-y-1.5">
-        <Label htmlFor="therapist_id">Therapist</Label>
-        <select
-          id="therapist_id"
-          className={SELECT_CLASS}
-          value={values.therapist_id}
-          onChange={(e) => update("therapist_id", e.target.value)}
-          required
-        >
-          <option value="" disabled>
-            Select a therapist
-          </option>
-          {therapists.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.first_name} {t.last_name}
-            </option>
-          ))}
-        </select>
-      </div>
+          {!hideTherapistSelect && (
+            <div className="space-y-1.5">
+              <Label htmlFor="therapist_id">Therapist</Label>
+              <select
+                id="therapist_id"
+                className={SELECT_CLASS}
+                value={values.therapist_id}
+                onChange={(e) => update("therapist_id", e.target.value)}
+                required
+              >
+                <option value="" disabled>
+                  Select a therapist
+                </option>
+                {therapists.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.first_name} {t.last_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-1.5">

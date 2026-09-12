@@ -10,8 +10,10 @@ import { formatMiles, formatMinutes, formatPct, formatShortDate } from "@/compon
 import { OptimizationImpactPanel } from "@/components/analytics/optimization-impact-panel";
 import { StatTile } from "@/components/analytics/stat-tile";
 import { TherapistBreakdownTable } from "@/components/analytics/therapist-breakdown-table";
+import { TherapistTodayPanel } from "@/components/dashboard/therapist-today-panel";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useCurrentUser } from "@/lib/use-current-user";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import type {
   AnalyticsOverview,
@@ -20,7 +22,6 @@ import type {
   OptimizationImpact,
   TherapistAnalyticsResponse,
 } from "@/types/analytics";
-import type { CurrentUser } from "@/types/user";
 
 function todayIso(): string {
   const d = new Date();
@@ -38,8 +39,8 @@ function buildDateParams(period: AnalyticsPeriod, customStart: string, customEnd
 
 export default function DashboardPage() {
   const { checked } = useRequireAuth();
+  const { user: currentUser, loading: userLoading } = useCurrentUser(checked);
 
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [period, setPeriod] = useState<AnalyticsPeriod>("this_week");
   const [customStart, setCustomStart] = useState(todayIso());
   const [customEnd, setCustomEnd] = useState(todayIso());
@@ -54,13 +55,7 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   const isAdminOrScheduler = currentUser?.role === "CLINIC_ADMIN" || currentUser?.role === "OFFICE_SCHEDULER";
-
-  useEffect(() => {
-    if (!checked) return;
-    apiFetch<CurrentUser>("/auth/me")
-      .then(setCurrentUser)
-      .catch(() => setError("Could not load your account details."));
-  }, [checked]);
+  const isTherapist = currentUser?.role === "THERAPIST";
 
   const loadDashboard = useCallback(async () => {
     if (period === "custom" && (!customStart || !customEnd)) return;
@@ -89,10 +84,25 @@ export default function DashboardPage() {
   }, [period, customStart, customEnd, selectedTherapistId]);
 
   useEffect(() => {
-    if (checked && currentUser) loadDashboard();
-  }, [checked, currentUser, loadDashboard]);
+    if (checked && currentUser && !isTherapist) loadDashboard();
+  }, [checked, currentUser, isTherapist, loadDashboard]);
 
-  if (!checked) return null;
+  if (!checked || userLoading) return null;
+
+  if (isTherapist) {
+    return (
+      <>
+        <AppHeader />
+        <main className="container max-w-4xl space-y-6 py-8">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Your schedule</h1>
+            <p className="text-sm text-muted-foreground">Today&apos;s appointments, driving time, and optimization - just for you.</p>
+          </div>
+          <TherapistTodayPanel />
+        </main>
+      </>
+    );
+  }
 
   return (
     <>

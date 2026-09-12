@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.core.permissions import UserRole
+from app.models.user import User
 from app.services import routing
 from app.services.routing import RouteResult
 from tests.conftest import auth_headers, make_patient, make_therapist, make_user
@@ -158,7 +159,12 @@ def test_travel_time_rejects_ambiguous_location_ref(client: TestClient, db_sessi
 
 
 def test_travel_time_allowed_for_therapist_role(client: TestClient, db_session, clinic, monkeypatch) -> None:
-    therapist_user = make_user(db_session, clinic, role=UserRole.THERAPIST, email="t@example.com")
+    # A real Therapist profile (make_therapist), not just a bare THERAPIST-role User - Phase 11
+    # made this endpoint resolve the caller's own therapist_id like every other role-scoped
+    # endpoint, which 404s for a THERAPIST-role user with no linked profile (see
+    # app.modules.maps.router's docstring and app.modules.scheduling.router's identical rule).
+    therapist = make_therapist(db_session, clinic, email="t@example.com")
+    therapist_user = db_session.get(User, therapist.user_id)
     _install_route(monkeypatch, RouteResult(distance_meters=1000, duration_seconds=60))
 
     response = client.post(

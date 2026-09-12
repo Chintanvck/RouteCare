@@ -36,6 +36,7 @@ from sqlalchemy.orm import InstrumentedAttribute, Query, Session
 from app.core.exceptions import NotFoundError
 from app.core.logging_config import app_logger
 from app.database.pagination import paginate
+from app.models.appointment import Appointment
 from app.models.patient import GeocodingStatus, Patient
 from app.schemas.common import PaginationParams
 from app.schemas.patient import PatientCreate, PatientUpdate
@@ -130,12 +131,35 @@ def create_patient(
     return patient
 
 
-def _active_patients_query(db: Session, *, clinic_id: uuid.UUID) -> Query:
-    return db.query(Patient).filter(Patient.clinic_id == clinic_id, Patient.deleted_at.is_(None))
+def _active_patients_query(
+    db: Session, *, clinic_id: uuid.UUID, restrict_to_therapist_id: uuid.UUID | None = None
+) -> Query:
+    """`restrict_to_therapist_id` scopes to patients the therapist has (or had) at least one
+    appointment with - the "relationship" Phase 11 uses instead of a schema change, per its
+    explicit "prefer fixing authorization using existing relationships" instruction: Patient has no
+    therapist_id/assignment column of its own (see this module's own docstring history), but
+    Appointment already links the two. Any status counts (including CANCELLED/NO_SHOW) - a
+    therapist who was ever legitimately scheduled with this patient has legitimately seen their
+    info before; this only ever narrows visibility, never a live authorization decision on
+    scheduling itself (that's app.services.appointment_service's job)."""
+    query = db.query(Patient).filter(Patient.clinic_id == clinic_id, Patient.deleted_at.is_(None))
+    if restrict_to_therapist_id is not None:
+        query = query.filter(
+            Patient.id.in_(
+                db.query(Appointment.patient_id).filter(Appointment.therapist_id == restrict_to_therapist_id)
+            )
+        )
+    return query
 
 
-def get_patient(db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID) -> Patient:
-    patient = _active_patients_query(db, clinic_id=clinic_id).filter(Patient.id == patient_id).first()
+def get_patient(
+    db: Session, *, clinic_id: uuid.UUID, patient_id: uuid.UUID, restrict_to_therapist_id: uuid.UUID | None = None
+) -> Patient:
+    patient = (
+        _active_patients_query(db, clinic_id=clinic_id, restrict_to_therapist_id=restrict_to_therapist_id)
+        .filter(Patient.id == patient_id)
+        .first()
+    )
     if patient is None:
         raise _not_found()
     return patient
@@ -150,8 +174,9 @@ def list_patients(
     zip_code: str | None = None,
     sort_by: SortBy = "created_at",
     sort_order: SortOrder = "desc",
+    restrict_to_therapist_id: uuid.UUID | None = None,
 ) -> tuple[list[Patient], int]:
-    query = _active_patients_query(db, clinic_id=clinic_id)
+    query = _active_patients_query(db, clinic_id=clinic_id, restrict_to_therapist_id=restrict_to_therapist_id)
 
     if search:
         like = f"%{search.strip()}%"

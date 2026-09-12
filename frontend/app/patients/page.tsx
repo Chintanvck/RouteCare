@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useCurrentUser } from "@/lib/use-current-user";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import type { PaginatedResponse, Patient, SortBy, SortOrder } from "@/types/patient";
 
@@ -17,6 +18,8 @@ const PAGE_SIZE = 25;
 
 export default function PatientsListPage() {
   const { checked } = useRequireAuth();
+  const { user: currentUser } = useCurrentUser(checked);
+  const isTherapist = currentUser?.role === "THERAPIST";
 
   const [search, setSearch] = useState("");
   const [zipCode, setZipCode] = useState("");
@@ -69,16 +72,23 @@ export default function PatientsListPage() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Patients</h1>
-            <p className="text-sm text-muted-foreground">Manage your clinic&apos;s patient records.</p>
+            <p className="text-sm text-muted-foreground">
+              {isTherapist ? "Patients on your schedule." : "Manage your clinic's patient records."}
+            </p>
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" asChild>
-              <Link href="/imports/patients">Import from Excel</Link>
-            </Button>
-            <Button asChild>
-              <Link href="/patients/new">Add patient</Link>
-            </Button>
-          </div>
+          {/* Creating/importing patients is a scheduler/admin action - a THERAPIST only ever
+              views their assigned patients (see patient_service._active_patients_query), so these
+              buttons would just 403 for them. */}
+          {!isTherapist && (
+            <div className="flex gap-2">
+              <Button variant="outline" asChild>
+                <Link href="/imports/patients">Import from Excel</Link>
+              </Button>
+              <Button asChild>
+                <Link href="/patients/new">Add patient</Link>
+              </Button>
+            </div>
+          )}
         </div>
 
         <form onSubmit={handleSearchSubmit} className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -156,9 +166,13 @@ export default function PatientsListPage() {
         {!loading && !error && data && data.items.length === 0 && (
           <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-16 text-center">
             <p className="text-sm text-muted-foreground">
-              {search || zipCode ? "No patients match your search." : "No patients yet."}
+              {search || zipCode
+                ? "No patients match your search."
+                : isTherapist
+                  ? "You don't have any assigned patients yet."
+                  : "No patients yet."}
             </p>
-            {!search && !zipCode && (
+            {!search && !zipCode && !isTherapist && (
               <Button asChild>
                 <Link href="/patients/new">Add your first patient</Link>
               </Button>

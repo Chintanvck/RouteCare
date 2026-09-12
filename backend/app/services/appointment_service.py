@@ -120,10 +120,18 @@ def validate_appointment(
     start_time: time,
     duration_minutes: int,
     exclude_appointment_id: uuid.UUID | None = None,
+    restrict_to_therapist_id: uuid.UUID | None = None,
 ) -> list[str]:
-    """Dry-run: returns the same errors create/update would raise, without persisting anything."""
+    """Dry-run: returns the same errors create/update would raise, without persisting anything.
+
+    `restrict_to_therapist_id` mirrors create_appointment's: a THERAPIST-role caller can only ever
+    dry-run against their own calendar, so their own id silently replaces whatever `therapist_id`
+    was submitted (same "can't bypass by sending someone else's id" reasoning as create). The
+    patient lookup is deliberately NOT restricted by it - see create_appointment's docstring for
+    why patient authorization for scheduling is "same clinic," not "already assigned."""
+    effective_therapist_id = restrict_to_therapist_id if restrict_to_therapist_id is not None else therapist_id
     try:
-        therapist = therapist_service.get_therapist(db, clinic_id=clinic_id, therapist_id=therapist_id)
+        therapist = therapist_service.get_therapist(db, clinic_id=clinic_id, therapist_id=effective_therapist_id)
     except NotFoundError:
         return ["Therapist was not found."]
     try:
@@ -148,9 +156,36 @@ def validate_appointment(
 
 
 def create_appointment(
-    db: Session, *, clinic_id: uuid.UUID, created_by: uuid.UUID, data: AppointmentCreate
+    db: Session,
+    *,
+    clinic_id: uuid.UUID,
+    created_by: uuid.UUID,
+    data: AppointmentCreate,
+    restrict_to_therapist_id: uuid.UUID | None = None,
 ) -> Appointment:
-    therapist = therapist_service.get_therapist(db, clinic_id=clinic_id, therapist_id=data.therapist_id)
+    """`restrict_to_therapist_id` is set only for a THERAPIST-role caller (see
+    app.modules.scheduling.router._own_therapist_id_if_therapist): their own id silently replaces
+    whatever `data.therapist_id` was submitted - the same "can't widen access by changing an id in
+    the request" precedent list_appointments already established - so a therapist can never create
+    an appointment assigned to someone else, even by sending another therapist's id.
+
+    The patient lookup deliberately does NOT get that same restriction. patient_service's
+    assignment-via-appointment rule (patients a therapist already has at least one Appointment
+    with) is exactly right for *viewing* a patient list/detail, but applying it here would be
+    circular for a brand-new assignment: an Appointment is required to authorize the therapist for
+    the patient, but authorization would be required to create that very Appointment. A patient
+    only needs to belong to the same clinic to have their first appointment created with an
+    authenticated therapist - the appointment created here is itself what establishes the
+    therapist-patient relationship for every subsequent lookup (list/get/optimization all key off
+    the same Appointment row). This mirrors CLINIC_ADMIN/OFFICE_SCHEDULER, who were never patient-
+    restricted here either - the only thing that changes for a THERAPIST caller is that
+    `therapist_id` can't be forged, not which patients they can pick."""
+    effective_therapist_id = restrict_to_therapist_id if restrict_to_therapist_id is not None else data.therapist_id
+    if effective_therapist_id is None:
+        raise BusinessRuleError(
+            "therapist_id is required.", code="APPOINTMENT_VALIDATION_FAILED", details={"errors": ["therapist_id is required."]}
+        )
+    therapist = therapist_service.get_therapist(db, clinic_id=clinic_id, therapist_id=effective_therapist_id)
     patient = patient_service.get_patient(db, clinic_id=clinic_id, patient_id=data.patient_id)
 
     end_time, errors = _validate(

@@ -2,10 +2,13 @@
 RouteCare AI - Appointment/calendar endpoints.
 
 CLINIC_ADMIN and OFFICE_SCHEDULER can create/manage any appointment in
-the clinic; THERAPIST can view and lightly manage (reschedule/status)
-only their own appointments - see app.services.appointment_service's
-`restrict_to_therapist_id` mechanism, resolved here once per request
-via the caller's linked Therapist profile.
+the clinic; THERAPIST can create appointments too, but only for
+themselves (their own id silently replaces whatever `therapist_id` was
+submitted - see appointment_service.create_appointment) and only for a
+patient they're already authorized to see, plus view and lightly manage
+(reschedule/status) only their own existing appointments - see
+app.services.appointment_service's `restrict_to_therapist_id` mechanism,
+resolved here once per request via the caller's linked Therapist profile.
 
 Calendar views (day/week) are just this same list endpoint with a
 start_date/end_date range - see docs/13_Coding_Standards.md-style
@@ -47,7 +50,7 @@ from app.services import appointment_service, therapist_service
 router = APIRouter()
 
 _READ_ROLES = (UserRole.CLINIC_ADMIN, UserRole.OFFICE_SCHEDULER, UserRole.THERAPIST)
-_WRITE_ROLES = (UserRole.CLINIC_ADMIN, UserRole.OFFICE_SCHEDULER)
+_WRITE_ROLES = (UserRole.CLINIC_ADMIN, UserRole.OFFICE_SCHEDULER, UserRole.THERAPIST)
 _MODIFY_ROLES = (UserRole.CLINIC_ADMIN, UserRole.OFFICE_SCHEDULER, UserRole.THERAPIST)
 
 
@@ -98,8 +101,9 @@ def create_appointment(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AppointmentPublic:
+    restrict_to = _own_therapist_id_if_therapist(db, clinic_id=clinic_id, current_user=current_user)
     appointment = appointment_service.create_appointment(
-        db, clinic_id=clinic_id, created_by=current_user.id, data=payload
+        db, clinic_id=clinic_id, created_by=current_user.id, data=payload, restrict_to_therapist_id=restrict_to
     )
     return AppointmentPublic.model_validate(appointment)
 
@@ -110,8 +114,10 @@ def create_appointment(
 def validate_appointment(
     payload: AppointmentValidateRequest,
     clinic_id: uuid.UUID = Depends(get_current_clinic_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AppointmentValidateResponse:
+    restrict_to = _own_therapist_id_if_therapist(db, clinic_id=clinic_id, current_user=current_user)
     errors = appointment_service.validate_appointment(
         db,
         clinic_id=clinic_id,
@@ -121,6 +127,7 @@ def validate_appointment(
         start_time=payload.start_time,
         duration_minutes=payload.duration_minutes,
         exclude_appointment_id=payload.exclude_appointment_id,
+        restrict_to_therapist_id=restrict_to,
     )
     return AppointmentValidateResponse(valid=not errors, errors=errors)
 

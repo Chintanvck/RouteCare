@@ -37,13 +37,22 @@ def test_list_requires_authentication(client: TestClient) -> None:
     assert client.get(APPOINTMENTS_URL).status_code == 401
 
 
-def test_therapist_cannot_create_appointment(client: TestClient, db_session: Session, clinic) -> None:
+def test_therapist_can_create_first_appointment_for_unassigned_same_clinic_patient(
+    client: TestClient, db_session: Session, clinic
+) -> None:
+    """A therapist's patient-visibility restriction (patient_service's assignment-via-appointment
+    rule) is correct for *viewing* an existing list, but it must not gate *creating* the first
+    appointment - that would be circular (an appointment is required to establish the
+    relationship, but the restriction would require the relationship to create the appointment).
+    Scheduling a same-clinic patient the therapist has never seen before must succeed; see
+    test_therapist_appointment_creation.py for the full story, including cross-clinic rejection."""
     therapist = make_therapist(db_session, clinic)
     make_weekday_availability(db_session, therapist)
     patient = make_patient(db_session, clinic)
 
     response = client.post(APPOINTMENTS_URL, json=_payload(therapist, patient), headers=auth_headers(therapist.user))
-    assert response.status_code == 403
+    assert response.status_code == 201
+    assert response.json()["patient_id"] == str(patient.id)
 
 
 def test_office_scheduler_can_create_appointment(client: TestClient, db_session: Session, clinic) -> None:

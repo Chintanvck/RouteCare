@@ -131,7 +131,14 @@ def _base_query(db: Session, *, clinic_id: uuid.UUID) -> Query:
     )
 
 
-def get_therapist(db: Session, *, clinic_id: uuid.UUID, therapist_id: uuid.UUID) -> Therapist:
+def get_therapist(
+    db: Session, *, clinic_id: uuid.UUID, therapist_id: uuid.UUID, restrict_to_therapist_id: uuid.UUID | None = None
+) -> Therapist:
+    """`restrict_to_therapist_id` (Phase 11) - a THERAPIST caller can only ever fetch their own
+    profile; a mismatched id 404s exactly like a nonexistent/cross-clinic one, same "PII, don't
+    confirm it exists elsewhere" reasoning as patient_service."""
+    if restrict_to_therapist_id is not None and therapist_id != restrict_to_therapist_id:
+        raise _not_found()
     therapist = _base_query(db, clinic_id=clinic_id).filter(Therapist.id == therapist_id).first()
     if therapist is None:
         raise _not_found()
@@ -151,8 +158,14 @@ def list_therapists(
     is_active: bool | None = None,
     sort_by: SortBy = "name",
     sort_order: SortOrder = "asc",
+    restrict_to_therapist_id: uuid.UUID | None = None,
 ) -> tuple[list[Therapist], int]:
     query = _base_query(db, clinic_id=clinic_id)
+    if restrict_to_therapist_id is not None:
+        # A THERAPIST caller has no legitimate reason to browse colleagues' profiles (Phase 11) -
+        # the list simply narrows to their own single record rather than 403ing, so the frontend's
+        # existing "fetch therapists for a dropdown" calls keep working unchanged everywhere.
+        query = query.filter(Therapist.id == restrict_to_therapist_id)
 
     if search:
         like = f"%{search.strip()}%"

@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { RecommendationCard } from "@/components/optimization/recommendation-card";
 import { WhatIfPanel } from "@/components/optimization/what-if-panel";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useCurrentUser } from "@/lib/use-current-user";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import type { Appointment } from "@/types/appointment";
 import type {
@@ -52,6 +53,8 @@ function startOfWeek(iso: string): string {
 
 export default function OptimizePage() {
   const { checked } = useRequireAuth();
+  const { user: currentUser } = useCurrentUser(checked);
+  const isTherapist = currentUser?.role === "THERAPIST";
 
   const [therapists, setTherapists] = useState<Therapist[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -85,6 +88,17 @@ export default function OptimizePage() {
       }
     })();
   }, [checked]);
+
+  // A THERAPIST's own therapist_id is the only one the backend will ever accept from them (see
+  // app.modules.optimization.router's restrict_to_therapist_id) - the /therapists fetch above
+  // already comes back as just their own single record, so auto-select it and skip making them
+  // pick from a list of one. Per the task's explicit "do not require unnecessary therapist
+  // selection."
+  useEffect(() => {
+    if (isTherapist && !therapistId && therapists.length > 0) {
+      setTherapistId(therapists[0].id);
+    }
+  }, [isTherapist, therapistId, therapists]);
 
   const appointmentsById = useMemo(() => {
     const map: Record<string, Appointment> = {};
@@ -259,24 +273,37 @@ export default function OptimizePage() {
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="opt-therapist">Therapist</Label>
-                <select
-                  id="opt-therapist"
-                  className={SELECT_CLASS}
-                  value={therapistId}
-                  onChange={(e) => setTherapistId(e.target.value)}
-                >
-                  <option value="" disabled>
-                    Select a therapist
-                  </option>
-                  {therapists.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.first_name} {t.last_name}
+              {/* A THERAPIST only ever optimizes their own schedule (auto-selected above) - a
+                  dropdown offering just their own name is unnecessary selection, per the task's
+                  explicit "do not require unnecessary therapist selection." Retained for
+                  CLINIC_ADMIN/OFFICE_SCHEDULER, who choose which therapist to optimize for. */}
+              {isTherapist ? (
+                <div className="space-y-1.5">
+                  <Label>Therapist</Label>
+                  <p className="flex h-9 items-center text-sm font-medium">
+                    {therapists[0] ? `${therapists[0].first_name} ${therapists[0].last_name} (you)` : "Loading..."}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label htmlFor="opt-therapist">Therapist</Label>
+                  <select
+                    id="opt-therapist"
+                    className={SELECT_CLASS}
+                    value={therapistId}
+                    onChange={(e) => setTherapistId(e.target.value)}
+                  >
+                    <option value="" disabled>
+                      Select a therapist
                     </option>
-                  ))}
-                </select>
-              </div>
+                    {therapists.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.first_name} {t.last_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <Label htmlFor="opt-date">{mode === "WEEK_SCHEDULE_OPTIMIZATION" ? "Any day in the week" : "Date"}</Label>
