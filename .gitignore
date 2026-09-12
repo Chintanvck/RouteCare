@@ -3,4 +3,7 @@ node_modules/
 __pycache__/
 .pytest_cache/
 .next/
+.open-next/
+.wrangler/
 venv/
+frontend/tsconfig.tsbuildinfo

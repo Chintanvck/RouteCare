@@ -10,7 +10,7 @@ Status: Draft
 > `docs/14_Production_Deployment.md` documents a different path -
 > self-hosted via `docker-compose.prod.yml` with your own Postgres/Redis
 > containers. This document is the **$0/month managed-services** path:
-> Cloudflare Pages + Render Free + Supabase + Upstash. Pick one path; both
+> Cloudflare + Render Free + Supabase + Upstash. Pick one path; both
 > read the same application code and the same environment variable names.
 
 ---
@@ -21,7 +21,7 @@ Get the existing app running on the public internet at $0/month:
 
 | Layer | Service | Tier |
 |---|---|---|
-| Frontend | Cloudflare Pages | Free |
+| Frontend | Cloudflare | Free |
 | Backend | Render Web Service | Free |
 | Database | Supabase PostgreSQL | Free |
 | Redis | Upstash Redis | Free |
@@ -93,41 +93,72 @@ regression coverage proving both halves of that.
    git branch -M main
    git push -u origin main
    ```
-3. Both Cloudflare Pages and Render connect directly to this repo and
+3. Both Cloudflare and Render connect directly to this repo and
    redeploy automatically on every push to `main` (configured in §4/§5).
 
 ---
 
-## 4. Cloudflare Pages setup (frontend)
+## 4. Cloudflare setup (frontend)
 
-1. Cloudflare dashboard → **Workers & Pages** → **Create** → **Pages** →
-   **Connect to Git** → select the GitHub repo.
-2. Build settings:
-   - **Framework preset**: Next.js (Cloudflare auto-fills the build
-     command/output directory for its Next.js adapter when you pick this).
-   - **Root directory**: `frontend` (this is a monorepo - frontend and
-     backend live side by side).
-3. **Environment variables** (Pages → project → Settings → Environment
-   variables), for the **Production** environment:
+**This section was corrected after actually going through it.** Cloudflare
+has consolidated Pages into its Workers platform - creating a new
+Git-connected project today lands you in the Workers Builds flow (Build
+command / Deploy command / Version command fields, no "Framework preset"
+dropdown), not the older classic Pages UI this doc originally assumed.
+That flow deploys via Wrangler, which needs a real config in the repo -
+added as part of this phase:
+
+- `frontend/wrangler.jsonc` - Worker name, entry point
+  (`.open-next/worker.js`), and the static-assets binding.
+- `frontend/open-next.config.ts` - minimal OpenNext config, no R2
+  incremental cache (an optional feature needing its own R2 bucket - not
+  set up, out of scope for this MVP).
+- `@opennextjs/cloudflare` + `wrangler` added as devDependencies.
+  **Pinned to `@opennextjs/cloudflare@1.15.1`** - newer versions (`1.16.0+`)
+  dropped Next.js 14 support entirely (require `next@>=15.5`), and
+  upgrading Next.js itself is out of scope for a deployment phase. `1.15.1`
+  is the last version whose peer range includes this app's exact
+  `next@14.2.35`. **Do not bump this dependency without also planning a
+  Next.js major-version upgrade.**
+
+This was verified locally end-to-end during this phase: `npm run cf:build`
+(added to `frontend/package.json`, wraps `opennextjs-cloudflare build`)
+ran `next build` and then OpenNext's Cloudflare bundler, producing
+`.open-next/worker.js` and `.open-next/assets/` exactly as
+`wrangler.jsonc` expects - not just assumed to work.
+
+Cloudflare dashboard setup:
+
+1. **Workers & Pages** → **Create** → connect the GitHub repo (already
+   done if you're reading this after hitting a failed first build with
+   `Build command: None` / `Deploy command: npx wrangler deploy`).
+2. **Root directory**: `frontend` (this is a monorepo - frontend and
+   backend live side by side; the default `/` is wrong).
+3. **Build command**: `npm run cf:build`
+4. **Deploy command**: `npx wrangler deploy` (the default is already
+   correct - it was only failing because `wrangler.jsonc` didn't exist
+   yet and the root directory was wrong).
+5. **Version command**: leave the default (`npx wrangler versions upload`)
+   - unused unless you turn on gradual rollouts, harmless either way.
+6. **Variables and secrets** (build-time), Production environment:
    | Variable | Value |
    |---|---|
    | `NEXT_PUBLIC_API_BASE_URL` | `https://<your-render-service>.onrender.com/api/v1` |
 
-   This is not a secret - `NEXT_PUBLIC_*` variables are baked into the
-   JS bundle and shipped to every browser (see `frontend/lib/api.ts`).
-   Set it *before* the first build, or trigger a redeploy after adding it
-   (Next.js inlines it at build time, not runtime).
-4. Deploy. Cloudflare gives you a `*.pages.dev` URL immediately; add a
-   custom domain later under Custom Domains if you want one - no code
-   change needed either way.
+   This is not a secret - `NEXT_PUBLIC_*` variables are baked into the JS
+   bundle and shipped to every browser (see `frontend/lib/api.ts`). It
+   must be set *before* triggering the build that needs it - Next.js
+   inlines it at build time, not runtime.
+7. Retry/trigger the build. Cloudflare gives you a `*.<project>.workers.dev`
+   URL; add a custom domain later if you want one - no code change needed
+   either way.
 
-**Why the Next.js adapter, not a plain static export**: `app/patients/
+**Why an adapter at all, not a plain static export**: `app/patients/
 [id]/page.tsx` and `app/therapists/[id]/page.tsx` are genuinely dynamic
 routes (arbitrary UUIDs, not known at build time). A plain `next export`
 requires every dynamic route to be pre-rendered via `generateStaticParams`,
-which doesn't fit this data. Cloudflare's Next.js framework preset runs
-the official adapter instead, which serves these routes correctly without
-any route restructuring.
+which doesn't fit this data. The OpenNext adapter runs Next.js's own
+server logic inside a Worker instead, so these routes work unmodified.
 
 ---
 
@@ -236,13 +267,13 @@ respectively.
 | `DATABASE_URL` | `postgresql+psycopg2://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres` | Session pooler, not direct connection - from Supabase §6. |
 | `REDIS_URL` | `rediss://default:<password>@<host>:<port>` | From Upstash §7. |
 | `JWT_SECRET_KEY` | Output of `python -c "import secrets; print(secrets.token_urlsafe(48))"` | Must be ≥32 chars and not the dev default - enforced at boot. |
-| `CORS_ORIGINS` | `https://<your-project>.pages.dev` | Comma-separate if you add a custom domain later, e.g. `https://app.example.com,https://<project>.pages.dev`. Must not contain `localhost`/be empty - enforced at boot. |
+| `CORS_ORIGINS` | `https://<your-worker>.<subdomain>.workers.dev` | Comma-separate if you add a custom domain later, e.g. `https://app.example.com,https://<worker>.<subdomain>.workers.dev`. Must not contain `localhost`/be empty - enforced at boot. |
 | `CELERY_TASK_ALWAYS_EAGER` | `true` | See §2. Free-tier-specific; do not set in the self-hosted-with-worker path. |
 | `ALLOW_EAGER_TASKS_IN_PRODUCTION` | `true` | Required alongside the above or the app refuses to boot (§2). Do not set in the self-hosted-with-worker path either. |
 | `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `REFRESH_TOKEN_EXPIRE_DAYS`, `PASSWORD_RESET_TOKEN_EXPIRE_MINUTES` | Defaults from `app/core/config.py` are fine | Only set if you want non-default values. |
 | `RATE_LIMIT_*` (12 settings), `MAX_REQUEST_BODY_BYTES`, `OSRM_BASE_URL`, `NOMINATIM_*` | Defaults are fine | See `app/core/config.py` for the full list. |
 
-And on Cloudflare Pages (§4):
+And on Cloudflare (§4):
 
 | Variable | Value |
 |---|---|
@@ -302,7 +333,7 @@ Already implemented correctly before this phase (`app/main.py` uses
 `Settings._validate_production_config` refuses to boot with an empty or
 localhost-containing `CORS_ORIGINS` when `ENVIRONMENT=production`). The
 only deployment-specific step is setting `CORS_ORIGINS` to the real
-Cloudflare Pages origin (§8's table) - no code change was needed here.
+Cloudflare origin (§8's table) - no code change was needed here.
 
 Keep `http://localhost:3000` in `CORS_ORIGINS` **only** for local dev
 (`backend/.env.example`'s default) - never in the Render production
@@ -312,7 +343,7 @@ value.
 
 ## 11. How to redeploy
 
-Both Cloudflare Pages and Render are connected directly to the GitHub
+Both Cloudflare and Render are connected directly to the GitHub
 repo (§4/§5) - a normal `git push origin main` redeploys both
 automatically. Neither runs Alembic migrations automatically; that stays
 a deliberate, manual, one-off command (§9) specifically so a deploy can
@@ -335,7 +366,7 @@ All three already existed before this phase (`app/main.py`). `/health/
 ready` returns 503 with which of `database`/`redis` failed if either is
 unreachable - check this first if something's wrong post-deploy.
 
-Frontend: open the Cloudflare Pages URL directly; a working load with no
+Frontend: open the Cloudflare URL directly; a working load with no
 console errors and a working login is the practical health check (no
 separate frontend health endpoint exists or is needed for a static/edge
 site).
@@ -399,7 +430,7 @@ Every step below is a config change, not a code or schema change:
 - [ ] `JWT_SECRET_KEY` on Render is unique, ≥32 chars, not the dev default.
 - [ ] `DATABASE_URL`/`REDIS_URL` values only live in Render's/Cloudflare's
       dashboards, never in a commit, PR, or log line.
-- [ ] `CORS_ORIGINS` is the real Cloudflare Pages origin only - not `*`,
+- [ ] `CORS_ORIGINS` is the real Cloudflare origin only - not `*`,
       not localhost.
 - [ ] `ENVIRONMENT=production` is set (this alone activates the startup
       validation above).
@@ -420,7 +451,7 @@ audit log retention policy, etc.) before handling real patient data.
 
 Run this against the real deployed URLs after §4-§9 are all live:
 
-1. Open the Cloudflare Pages URL.
+1. Open the Cloudflare URL.
 2. Log in as a seeded therapist.
 3. Confirm the header shows the logged-in user's name/role (UserMenu).
 4. Open the dashboard - confirm the therapist view (not the clinic-wide
