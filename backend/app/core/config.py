@@ -50,9 +50,14 @@ class Settings(BaseSettings):
     IMPORT_STORAGE_DIR: str = "var/imports"
     IMPORT_MAX_FILE_SIZE_BYTES: int = Field(default=10 * 1024 * 1024, gt=0)  # 10 MB
 
-    # Celery - dev/demo convenience only. Runs tasks synchronously in-process
-    # instead of dispatching to a worker via Redis. Never set true in production.
+    # Celery - dev/demo convenience by default: runs tasks synchronously in-process instead of
+    # dispatching to a worker via Redis. Refused in production (see _validate_production_config)
+    # unless ALLOW_EAGER_TASKS_IN_PRODUCTION is also explicitly set - the one supported exception
+    # is a worker-less free-tier deployment (e.g. Render's free tier has no free background-worker
+    # service) that deliberately accepts synchronous optimization/import requests instead of paying
+    # for a worker process. See docs/15_Free_Deployment.md section 2.
     CELERY_TASK_ALWAYS_EAGER: bool = False
+    ALLOW_EAGER_TASKS_IN_PRODUCTION: bool = False
     # Backstop timeouts (Phase 9) - defense-in-depth against a hung network call or pathological
     # input occupying a worker forever; per-call HTTP timeouts (ROUTING_TIMEOUT_SECONDS etc.) are
     # the first line of defense and should trip long before these do. Soft raises
@@ -130,9 +135,11 @@ class Settings(BaseSettings):
             )
         if _INSECURE_DB_PASSWORD_MARKER in self.DATABASE_URL:
             problems.append("DATABASE_URL still contains the development default password.")
-        if self.CELERY_TASK_ALWAYS_EAGER:
+        if self.CELERY_TASK_ALWAYS_EAGER and not self.ALLOW_EAGER_TASKS_IN_PRODUCTION:
             problems.append(
-                "CELERY_TASK_ALWAYS_EAGER must be false in production - background jobs would block requests."
+                "CELERY_TASK_ALWAYS_EAGER must be false in production - background jobs would block requests. "
+                "If this is a deliberate worker-less free-tier deployment, also set "
+                "ALLOW_EAGER_TASKS_IN_PRODUCTION=true (see docs/15_Free_Deployment.md)."
             )
         insecure_origins = [o for o in self.cors_origins_list if "localhost" in o or "127.0.0.1" in o]
         if insecure_origins or not self.cors_origins_list:

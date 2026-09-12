@@ -24,10 +24,16 @@ USER appuser
 
 EXPOSE 8000
 
+# PORT defaults to 8000 for anything that doesn't override it (plain `docker run`,
+# docker-compose.prod.yml); Render (and similar PaaS hosts) inject their own PORT and require the
+# process to bind to it - see docs/15_Free_Deployment.md.
+ENV PORT=8000
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request as u; u.urlopen('http://localhost:8000/health/live', timeout=3)" || exit 1
+    CMD python -c "import os, urllib.request as u; u.urlopen(f'http://localhost:{os.environ.get(\"PORT\", \"8000\")}/health/live', timeout=3)" || exit 1
 
 # No --reload (dev-only, watches the filesystem and re-imports on every change - wasted overhead
-# and a larger attack surface in production); --workers gives a small amount of process-level
-# concurrency without needing a separate process manager for this deployment's scale.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# and a larger attack surface in production). Single worker: free-tier hosts (e.g. Render's 512MB
+# free web service) don't have headroom for multiple uvicorn workers alongside OR-Tools' CP-SAT
+# solver; bump WEB_CONCURRENCY on a host with more memory instead of changing this default.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY:-1}"]
