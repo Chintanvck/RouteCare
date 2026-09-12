@@ -159,16 +159,30 @@ an instance always warm).
 
 1. `supabase.com` → New project. Note the database password you set (you
    need it for the connection string - Supabase doesn't show it again).
-2. Project → **Settings** → **Database** → **Connection string** → copy
-   the **URI** (direct connection, port 5432 - not the pooler on 6543;
-   the app runs as a single long-lived process on Render, not serverless
-   functions, so the simpler direct connection is correct here and avoids
-   PgBouncer/transaction-pooling caveats with SQLAlchemy's prepared
-   statements).
-3. Convert the copied URI's scheme for SQLAlchemy + psycopg2 (the app
-   uses `psycopg2-binary`, not `asyncpg`):
+   Use a plain alphanumeric password - a literal `%` in it breaks
+   Alembic's `configparser`-based config loading regardless of URL-
+   encoding (found and worked around during this phase's actual
+   deployment; not worth the surprise later).
+2. Use the **Session pooler** connection string, not the direct
+   connection. Project → **Connect** (or Settings → Database) →
+   **Session pooler** tab → copy the URI. **This was verified the hard
+   way during this phase**: Supabase's direct connection
+   (`db.<ref>.supabase.co:5432`) is IPv6-only, and it failed with
+   `Network is unreachable` from this project's own Docker environment -
+   getting IPv4 to the direct connection requires Supabase's paid IPv4
+   add-on. The session pooler is IPv4-reachable and free, and (unlike
+   the *transaction* pooler on port 6543) behaves like a normal
+   per-client connection, so it doesn't hit SQLAlchemy/psycopg2's
+   prepared-statement caveats with PgBouncer transaction-mode pooling.
+   It looks like:
    ```
-   postgresql+psycopg2://postgres:<password>@<host>:5432/postgres
+   postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+   ```
+3. Convert the scheme for SQLAlchemy + psycopg2 (the app uses
+   `psycopg2-binary`, not `asyncpg`) - same host/port/credentials,
+   just `postgresql+psycopg2://` instead of `postgresql://`:
+   ```
+   postgresql+psycopg2://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
    ```
 4. (Optional, matches the local Docker topology's `docker/postgres/
    init.sql` - not currently queried by any migration or app code, so
@@ -178,7 +192,7 @@ an instance always warm).
    CREATE EXTENSION IF NOT EXISTS postgis;
    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
    ```
-5. Run migrations - see §8.
+5. Run migrations - see §9.
 
 **No second schema design**: this runs the exact same
 `backend/alembic/versions/*` migration chain used locally. Supabase ends
@@ -219,7 +233,7 @@ respectively.
 | Variable | Value for this deployment | Notes |
 |---|---|---|
 | `ENVIRONMENT` | `production` | Triggers `Settings._validate_production_config`. |
-| `DATABASE_URL` | `postgresql+psycopg2://postgres:<password>@<host>:5432/postgres` | From Supabase §6. |
+| `DATABASE_URL` | `postgresql+psycopg2://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres` | Session pooler, not direct connection - from Supabase §6. |
 | `REDIS_URL` | `rediss://default:<password>@<host>:<port>` | From Upstash §7. |
 | `JWT_SECRET_KEY` | Output of `python -c "import secrets; print(secrets.token_urlsafe(48))"` | Must be ≥32 chars and not the dev default - enforced at boot. |
 | `CORS_ORIGINS` | `https://<your-project>.pages.dev` | Comma-separate if you add a custom domain later, e.g. `https://app.example.com,https://<project>.pages.dev`. Must not contain `localhost`/be empty - enforced at boot. |
@@ -244,13 +258,24 @@ it set - **do not** run this as part of every Render deploy, see §11):
 
 ```bash
 cd backend
-DATABASE_URL="postgresql+psycopg2://postgres:<password>@<host>:5432/postgres" \
+DATABASE_URL="postgresql+psycopg2://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres" \
   alembic upgrade head
 ```
 
 `backend/alembic/env.py` reads `DATABASE_URL` from `Settings`, the same
 object the app itself uses - there is no separate migration-only config
 to keep in sync.
+
+This was actually run against this project's real Supabase instance
+during this phase (`alembic upgrade head` through revision `0007`,
+confirmed via `alembic current` → `0007 (head)`), not just described:
+16 application tables, all 9 app-defined enums (`appointment_status`,
+`user_role`, `geocoding_status`, etc. - a fresh Supabase project also
+provisions ~12 of its own `auth`/`storage`-schema enums; harmless, not
+ours, don't be alarmed if `\dT+` shows more than 9), 40 indexes, and 271
+constraints, then a real write → read-back → delete round trip through
+the actual `Clinic` SQLAlchemy model to confirm the app - not just
+`psql` - can use this database.
 
 **Verify** (via Supabase's SQL Editor or `psql`):
 ```sql
