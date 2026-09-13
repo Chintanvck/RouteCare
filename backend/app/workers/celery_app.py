@@ -48,6 +48,17 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_always_eager=settings.CELERY_TASK_ALWAYS_EAGER,
+    # Every router calls `.delay(...)` and discards the returned result - correct for real async
+    # dispatch (a worker logs/handles task failures independently), but dangerous combined with
+    # task_always_eager: Celery's default eager behavior catches a task's exception into the
+    # (discarded) EagerResult instead of raising it, so any failure - even one outside the task
+    # body's own try/except, e.g. constructing its DB session - vanishes with no log line and no
+    # error response, leaving an ImportJob/OptimizationRequest stuck at PROCESSING forever (found
+    # during Phase 12's real deployment testing). Propagating makes an eager-mode task failure
+    # surface exactly like any other in-request exception - logged and turned into a 500 - instead
+    # of disappearing. No effect when task_always_eager is false (non-eager dispatch doesn't call
+    # apply() at all, so this setting is dormant for local dev / the self-hosted-with-worker path).
+    task_eager_propagates=True,
     # Phase 9 hardening - see Settings.CELERY_TASK_SOFT_TIME_LIMIT_SECONDS's docstring.
     task_soft_time_limit=settings.CELERY_TASK_SOFT_TIME_LIMIT_SECONDS,
     task_time_limit=settings.CELERY_TASK_TIME_LIMIT_SECONDS,

@@ -41,6 +41,35 @@ def test_real_celery_app_has_no_result_backend() -> None:
     assert type(celery_app.backend).__name__ == "DisabledBackend"
 
 
+def test_real_celery_app_propagates_eager_exceptions() -> None:
+    """The second bug found during Phase 12's real deployment testing: every router calls
+    `.delay(...)` and discards the result, which is correct for real async dispatch (a worker logs
+    task failures independently) but meant that with task_always_eager on and the default
+    task_eager_propagates=False, ANY exception during eager execution - even one outside the task
+    body's own try/except, like constructing its DB session - vanished silently: no log line, no
+    error response, just an ImportJob/OptimizationRequest stuck at PROCESSING forever. This is the
+    config flag that makes an eager failure surface like any other in-request exception instead."""
+    assert celery_app.conf.task_eager_propagates is True
+
+
+def test_eager_propagation_actually_surfaces_a_task_exception() -> None:
+    """Proves task_eager_propagates=True does what it says, independent of the real app's config -
+    a task's exception must come out of `.delay()` itself, not disappear into a discarded result."""
+    app = Celery("regression-test-propagation", broker="redis://fake-host:6379")
+    app.conf.update(task_always_eager=True, task_eager_propagates=True)
+
+    @app.task
+    def boom() -> None:
+        raise ValueError("intentional failure for this test")
+
+    try:
+        boom.delay()
+    except ValueError as exc:
+        assert "intentional failure" in str(exc)
+    else:
+        raise AssertionError("Expected the task's exception to propagate out of .delay(), not be swallowed.")
+
+
 def test_eager_task_dispatch_succeeds_with_tls_redis_broker_url() -> None:
     """Mirrors celery_app.py's exact construction (broker only, no backend) against a `rediss://`
     URL shaped like Upstash's - proving `.delay()` doesn't blow up the way it did before this fix,
